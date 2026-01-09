@@ -16,6 +16,8 @@
       --danger: #ff5c7a;
       --shadow: 0 20px 60px rgba(0,0,0,.35);
       --r: 18px;
+      --ok: rgba(0,255,209,.16);
+      --warn: rgba(255,184,0,.16);
     }
     *{ box-sizing:border-box }
     html,body{ height:100% }
@@ -38,7 +40,7 @@
     }
 
     .card{
-      width:min(980px, 96vw);
+      width:min(1040px, 96vw);
       border-radius: var(--r);
       background: var(--glass);
       border:1px solid var(--stroke);
@@ -57,9 +59,10 @@
     }
     .brand{
       display:flex; flex-direction:column; gap:2px;
+      min-width: 220px;
     }
     .brand b{ font-size:16px; letter-spacing:.2px }
-    .brand span{ font-size:12px; color:var(--muted) }
+    .brand span{ font-size:12px; color:var(--muted); line-height:1.3 }
 
     .stats{
       display:flex; gap:10px; flex-wrap:wrap;
@@ -72,17 +75,19 @@
       background: rgba(0,0,0,.18);
       border:1px solid rgba(255,255,255,.12);
       display:flex; gap:8px; align-items:center;
+      white-space:nowrap;
     }
     .pill b{ color:var(--txt) }
 
     main{
       padding: 16px 18px 18px;
       display:grid;
-      grid-template-columns: 1.1fr .9fr;
+      grid-template-columns: 1.15fr .85fr;
       gap: 14px;
     }
-    @media (max-width: 860px){
+    @media (max-width: 920px){
       main{ grid-template-columns: 1fr; }
+      .brand{ min-width: unset; }
     }
 
     .panel{
@@ -102,7 +107,7 @@
       padding: 9px 12px;
       border-radius: 999px;
       cursor:pointer;
-      font-weight:600;
+      font-weight:700;
       font-size:12px;
       transition: transform .12s ease, background .12s ease;
       user-select:none;
@@ -146,9 +151,9 @@
       display:grid; place-items:center;
       background: rgba(255,255,255,.10);
       border:1px solid rgba(255,255,255,.12);
-      font-weight:800;
+      font-weight:900;
     }
-    #tipSteps span{ color: rgba(255,255,255,.88); line-height:1.35; }
+    #tipSteps span{ color: rgba(255,255,255,.90); line-height:1.35; }
 
     .actions{
       display:flex; gap:10px; flex-wrap:wrap;
@@ -161,7 +166,7 @@
       padding: 10px 12px;
       border-radius: 12px;
       cursor:pointer;
-      font-weight:700;
+      font-weight:800;
       font-size: 13px;
       transition: transform .12s ease, background .12s ease;
     }
@@ -169,6 +174,9 @@
     .btn.primary{
       background: rgba(0,255,209,.16);
       border-color: rgba(0,255,209,.35);
+    }
+    .btn.ghost{
+      background: rgba(0,0,0,.18);
     }
 
     .side h3{ margin:0 0 10px; font-size:14px; color:rgba(255,255,255,.92) }
@@ -184,8 +192,90 @@
       border-radius: 12px;
       background: rgba(255,255,255,.06);
       border:1px solid rgba(255,255,255,.10);
+      align-items:center;
     }
     .mini .row b{ color: var(--txt); }
+
+    .sep{ height:1px; background: rgba(255,255,255,.10); margin: 12px 0; }
+
+    /* ====== PROGRESO / NIVEL ====== */
+    .meter{
+      background: rgba(255,255,255,.06);
+      border:1px solid rgba(255,255,255,.10);
+      border-radius: 14px;
+      padding: 10px 12px;
+    }
+    .meterTop{
+      display:flex; justify-content:space-between; gap:10px;
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 8px;
+      align-items:center;
+    }
+    .meterTop b{ color: var(--txt); }
+    .bar{
+      height: 10px;
+      border-radius: 999px;
+      background: rgba(0,0,0,.25);
+      border: 1px solid rgba(255,255,255,.10);
+      overflow:hidden;
+    }
+    .bar > i{
+      display:block;
+      height:100%;
+      width:0%;
+      background: linear-gradient(90deg, rgba(0,255,209,.35), rgba(0,255,209,.12));
+      border-right: 1px solid rgba(0,255,209,.35);
+      transition: width .25s ease;
+    }
+    .meterFoot{
+      display:flex; justify-content:space-between; gap:10px;
+      margin-top: 8px;
+      font-size: 12px;
+      color: var(--muted);
+      flex-wrap:wrap;
+    }
+
+    /* ====== INSIGHTS ====== */
+    .tagRow{
+      display:flex; flex-wrap:wrap; gap:8px;
+      margin-top: 10px;
+    }
+    .tag{
+      padding:8px 10px;
+      border-radius:999px;
+      font-size:12px;
+      font-weight:800;
+      border:1px solid rgba(255,255,255,.12);
+      background: rgba(255,255,255,.06);
+      color: rgba(255,255,255,.88);
+      display:flex; gap:8px; align-items:center;
+    }
+    .tag small{ font-weight:900; color: var(--txt); }
+    .tag.ok{ background: var(--ok); border-color: rgba(0,255,209,.22); }
+    .tag.warn{ background: var(--warn); border-color: rgba(255,184,0,.22); }
+
+    .list{
+      margin: 10px 0 0;
+      padding: 0;
+      list-style: none;
+      display:flex;
+      flex-direction:column;
+      gap:8px;
+    }
+    .list li{
+      padding: 10px 12px;
+      border-radius: 12px;
+      border:1px solid rgba(255,255,255,.10);
+      background: rgba(255,255,255,.06);
+      display:flex;
+      justify-content:space-between;
+      gap:10px;
+      align-items:center;
+      font-size: 13px;
+      color: rgba(255,255,255,.86);
+    }
+    .list li b{ color: var(--txt); }
 
     #audioBanner{
       display:none;
@@ -225,7 +315,6 @@
 </head>
 
 <body>
-  <!-- Fondo FX -->
   <canvas id="fxCanvas"></canvas>
 
   <div class="wrap">
@@ -239,11 +328,13 @@
         <div class="stats">
           <div class="pill">Visitas: <b id="visitCount">—</b></div>
           <div class="pill">Racha: <b id="streak">—</b></div>
+          <div class="pill">Nivel: <b id="level">—</b></div>
           <button class="btn" id="btnMusic" type="button">🔊 Música: AUTO</button>
         </div>
       </header>
 
       <main>
+        <!-- IZQUIERDA: TIPS -->
         <section class="panel">
           <div class="chips">
             <button class="chip" id="chipSeg"  aria-pressed="true"  type="button">Seguridad</button>
@@ -261,15 +352,46 @@
             <button class="btn primary" id="btnRefresh" type="button">🔄 Nuevo tip</button>
             <button class="btn" id="btnCopy" type="button">📋 Copiar</button>
             <button class="btn" id="btnShare" type="button">📲 Compartir</button>
+            <button class="btn ghost" id="btnInsights" type="button">📊 Mis estadísticas</button>
           </div>
         </section>
 
+        <!-- DERECHA: ESTADO + INSIGHTS -->
         <aside class="panel side">
           <h3>Estado</h3>
+
           <div class="mini">
-            <div class="row"><span>Historial</span> <b id="historyCount">0</b></div>
+            <div class="row"><span>Historial (local)</span> <b id="historyCount">0</b></div>
             <div class="row"><span>Audio</span> <b id="audioState">🔊 Música: AUTO</b></div>
+            <div class="row"><span>Acciones (7 días)</span> <b id="activeDays">—</b></div>
           </div>
+
+          <div class="sep"></div>
+
+          <div class="meter" aria-label="Progreso de nivel">
+            <div class="meterTop">
+              <span>Progreso</span>
+              <span><b id="xpNow">—</b> XP · Próx. nivel <b id="nextLevel">—</b></span>
+            </div>
+            <div class="bar" aria-hidden="true"><i id="xpBar"></i></div>
+            <div class="meterFoot">
+              <span>Faltan <b id="xpLeft">—</b> XP</span>
+              <span>Meta: <b id="xpGoal">—</b> XP</span>
+            </div>
+          </div>
+
+          <div class="sep"></div>
+
+          <h3>Insights (últimos 7 días)</h3>
+
+          <div class="tagRow" id="tagRow">
+            <div class="tag"><span>⏳</span><small id="peakHour">—</small><span style="opacity:.7;">Hora pico</span></div>
+            <div class="tag"><span>🔥</span><small id="topAction">—</small><span style="opacity:.7;">Acción top</span></div>
+            <div class="tag ok"><span>✅</span><small id="healthHint">—</small><span style="opacity:.7;">Balance</span></div>
+          </div>
+
+          <ul class="list" id="actionList"></ul>
+          <ul class="list" id="hourList"></ul>
 
           <div id="audioBanner">
             <span>Para activar música, toque “Habilitar”.</span>
@@ -283,15 +405,13 @@
     </div>
   </div>
 
-  <!-- Audio (puede ser vacío al inicio, pero debe existir el elemento) -->
   <audio id="bgMusic" preload="auto" loop>
-    <!-- Ponga aquí su mp3 si desea: <source src="./audio.mp3" type="audio/mpeg"> -->
+    <!-- <source src="./audio.mp3" type="audio/mpeg"> -->
   </audio>
 
   <div id="toast" role="status" aria-live="polite"></div>
 
   <script>
-  // ✅ IMPORTANTE: arrancar cuando el DOM ya existe
   document.addEventListener("DOMContentLoaded", () => {
 
     /* =========================
@@ -309,27 +429,39 @@
     }
 
     /* =========================
-       CONFIG API (contador + perfil + eventos)
+       Ref simple (para medir visitas desde TikTok/WhatsApp/etc.)
+       ========================= */
+    function getRef(){
+      try{
+        const url = new URL(location.href);
+        const ref = (url.searchParams.get("ref") || "").trim().toLowerCase();
+        if (ref) return ref.replaceAll(/[^a-z0-9\-_.]/g,"").slice(0,32) || "direct";
+      }catch{}
+      return "direct";
+    }
+    const REF = getRef();
+
+    /* =========================
+       CONFIG API
        ========================= */
     const API_BASE = "https://api.systemblacklem.com";
     const PAGE_KEY = "visits";
 
-    const ENDPOINT_TRACK = `${API_BASE}/api/public/visits/track?page=${encodeURIComponent(PAGE_KEY)}`;
-    const ENDPOINT_ME    = `${API_BASE}/api/public/visits/me?page=${encodeURIComponent(PAGE_KEY)}`;
-    const ENDPOINT_EVENT = `${API_BASE}/api/public/visits/event`;
+    const ENDPOINT_TRACK    = `${API_BASE}/api/public/visits/track?page=${encodeURIComponent(PAGE_KEY)}`;
+    const ENDPOINT_ME       = `${API_BASE}/api/public/visits/me?page=${encodeURIComponent(PAGE_KEY)}`;
+    const ENDPOINT_EVENT    = `${API_BASE}/api/public/visits/event`;
+    const ENDPOINT_INSIGHTS = `${API_BASE}/api/public/visits/insights/me?page=${encodeURIComponent(PAGE_KEY)}`;
 
     /* =========================
        VisitorId anónimo (persistente)
        ========================= */
     const VISITOR_KEY = "sb_visitor_id_v1";
-
     function randomId(len = 20){
       const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
       let out = "";
       for (let i=0;i<len;i++) out += chars[Math.floor(Math.random()*chars.length)];
       return out;
     }
-
     function getVisitorId(){
       const stored = safeGet(VISITOR_KEY);
       if (typeof stored === "string" && stored.length >= 8) return stored;
@@ -337,7 +469,6 @@
       safeSet(VISITOR_KEY, v);
       return v;
     }
-
     const VISITOR_ID = getVisitorId();
 
     /* =========================
@@ -354,24 +485,65 @@
       return text ? JSON.parse(text) : null;
     }
 
-    function applyProfile(data){
-      if (!data) return;
-      const vc = document.getElementById("visitCount");
-      if (vc) vc.textContent = String(data.total ?? "—");
-      if (typeof data.streak === "number") {
-        const st = document.getElementById("streak");
-        if (st) st.textContent = String(data.streak);
-      }
+    /* =========================
+       UI helpers
+       ========================= */
+    const elToast = document.getElementById("toast");
+    function toast(msg){
+      if (!elToast) return;
+      elToast.textContent = msg;
+      elToast.classList.add("show");
+      clearTimeout(toast._t);
+      toast._t = setTimeout(()=> elToast.classList.remove("show"), 1400);
     }
 
-    async function loadMe(){ try{ applyProfile(await apiFetch(ENDPOINT_ME,{method:"GET"})); }catch{} }
+    /* =========================
+       Perfil (server) + progreso nivel
+       ========================= */
+    const elVisitCount = document.getElementById("visitCount");
+    const elStreak     = document.getElementById("streak");
+    const elLevel      = document.getElementById("level");
+    const elXpNow      = document.getElementById("xpNow");
+    const elNextLevel  = document.getElementById("nextLevel");
+    const elXpLeft     = document.getElementById("xpLeft");
+    const elXpGoal     = document.getElementById("xpGoal");
+    const elXpBar      = document.getElementById("xpBar");
+
+    function computeProgress(xp, level){
+      // Tu backend: nivel = 1 + floor(xp/100)
+      const lvl = Math.max(1, Number(level || 1));
+      const x = Math.max(0, Number(xp || 0));
+      const currentBase = (lvl - 1) * 100;
+      const nextGoal = lvl * 100;
+      const inLevel = Math.max(0, x - currentBase);
+      const goal = 100;
+      const pct = Math.max(0, Math.min(100, Math.round((inLevel / goal) * 100)));
+      const left = Math.max(0, nextGoal - x);
+      return { lvl, x, nextGoal, pct, left, goal };
+    }
+
+    function applyProfile(data){
+      if (!data) return;
+
+      if (elVisitCount) elVisitCount.textContent = String(data.total ?? "—");
+      if (elStreak)     elStreak.textContent = String(data.streak ?? "—");
+      if (elLevel)      elLevel.textContent = String(data.level ?? "—");
+
+      const prog = computeProgress(data.xp, data.level);
+
+      if (elXpNow)     elXpNow.textContent = String(prog.x);
+      if (elNextLevel) elNextLevel.textContent = String(prog.lvl + 1);
+      if (elXpGoal)    elXpGoal.textContent = String(prog.nextGoal);
+      if (elXpLeft)    elXpLeft.textContent = String(prog.left);
+      if (elXpBar)     elXpBar.style.width = prog.pct + "%";
+    }
+
+    async function loadMe(){
+      try{ applyProfile(await apiFetch(ENDPOINT_ME,{method:"GET"})); }catch{}
+    }
     async function track(){
       try{ applyProfile(await apiFetch(ENDPOINT_TRACK,{method:"GET"})); }
-      catch{ const vc=document.getElementById("visitCount"); if (vc) vc.textContent="—"; }
-    }
-    async function sendEvent(type){
-      try{ applyProfile(await apiFetch(ENDPOINT_EVENT,{method:"POST", body: JSON.stringify({page:PAGE_KEY,type})})); }
-      catch{}
+      catch{ if (elVisitCount) elVisitCount.textContent="—"; }
     }
 
     /* =========================
@@ -379,8 +551,32 @@
        ========================= */
     const PREF_KEY = "sb_visits_prefs_v1";
     const HISTORY_KEY = "sb_tip_history_v1";
-
     const prefs = safeGet(PREF_KEY) ?? { topic:"seguridad", musicState:"AUTO", lastDay:"" };
+
+    function historyGet(){ return safeGet(HISTORY_KEY) ?? []; }
+    function historyPush(text){
+      const h = historyGet();
+      const next = [text, ...h.filter(x => x !== text)].slice(0, 7);
+      safeSet(HISTORY_KEY, next);
+      const hc = document.getElementById("historyCount");
+      if (hc) hc.textContent = String(next.length);
+    }
+
+    /* =========================
+       Eventos (server) con topic/ref
+       ========================= */
+    async function sendEvent(type, refOverride){
+      const payload = {
+        page: PAGE_KEY,
+        type,
+        topic: (prefs.topic || "seguridad"),
+        ref: (refOverride || REF || "direct")
+      };
+      try{
+        const res = await apiFetch(ENDPOINT_EVENT, { method:"POST", body: JSON.stringify(payload) });
+        applyProfile(res);
+      }catch{}
+    }
 
     /* =========================
        Contenido (tips)
@@ -435,25 +631,7 @@
 
     const elTitle = document.getElementById("tipTitle");
     const elSteps = document.getElementById("tipSteps");
-    const elToast = document.getElementById("toast");
     let currentTip = null;
-
-    function toast(msg){
-      if (!elToast) return;
-      elToast.textContent = msg;
-      elToast.classList.add("show");
-      clearTimeout(toast._t);
-      toast._t = setTimeout(()=> elToast.classList.remove("show"), 1400);
-    }
-
-    function historyGet(){ return safeGet(HISTORY_KEY) ?? []; }
-    function historyPush(text){
-      const h = historyGet();
-      const next = [text, ...h.filter(x => x !== text)].slice(0, 7);
-      safeSet(HISTORY_KEY, next);
-      const hc = document.getElementById("historyCount");
-      if (hc) hc.textContent = String(next.length);
-    }
 
     function tipToText(t){
       return [`✨ ${t.title}`, ...t.steps.map((s,i)=>`${i+1}) ${s}`), `— SystemBlacklem · Alberto Lem`].join("\n");
@@ -526,27 +704,130 @@
         return ok;
       }catch{ return false; }
     }
-    function shareWhatsApp(text){ window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank", "noopener"); }
+
+    function shareWhatsApp(text){
+      window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank", "noopener");
+    }
+
     async function shareNative(text){
       if (navigator.share){ try{ await navigator.share({ text }); return true; }catch{} }
       return false;
     }
 
-    document.getElementById("btnRefresh")?.addEventListener("click", async () => { newTip(); await sendEvent("NEW_TIP"); });
+    document.getElementById("btnRefresh")?.addEventListener("click", async () => {
+      newTip();
+      await sendEvent("NEW_TIP");
+      await loadInsights(true);
+    });
+
     document.getElementById("btnCopy")?.addEventListener("click", async () => {
       const text = currentTip ? tipToText(currentTip) : "";
       const ok = await copyText(text);
       toast(ok ? "✅ Copiado al portapapeles" : "⚠️ No se pudo copiar");
       if (ok) await sendEvent("COPY_TIP");
+      await loadInsights(true);
     });
+
     document.getElementById("btnShare")?.addEventListener("click", async () => {
       const text = currentTip ? tipToText(currentTip) : "";
       const ok = await shareNative(text);
-      if (!ok) shareWhatsApp(text);
-      await sendEvent("SHARE_TIP");
+      if (!ok) {
+        // si cae a whatsapp, guardamos ref=whatsapp para medir mejor
+        await sendEvent("SHARE_TIP", "whatsapp");
+        shareWhatsApp(text);
+      } else {
+        await sendEvent("SHARE_TIP");
+      }
+      await loadInsights(true);
     });
 
-    // FX Canvas
+    /* =========================
+       INSIGHTS UI
+       ========================= */
+    const elActiveDays = document.getElementById("activeDays");
+    const elPeakHour   = document.getElementById("peakHour");
+    const elTopAction  = document.getElementById("topAction");
+    const elHealthHint = document.getElementById("healthHint");
+    const elActionList = document.getElementById("actionList");
+    const elHourList   = document.getElementById("hourList");
+
+    function niceActionLabel(k){
+      const key = String(k||"").toUpperCase();
+      if (key === "NEW_TIP") return "Nuevos tips";
+      if (key === "COPY_TIP") return "Copias";
+      if (key === "SHARE_TIP") return "Compartidos";
+      return key || "—";
+    }
+
+    function calcBalance(ins){
+      // Señal simple (no médica): si solo comparte y no aprende, “desequilibrio”.
+      const counts = {};
+      for (const p of (ins.actionCountsLast7||[])) counts[p.key] = p.value;
+
+      const nt = Number(counts.NEW_TIP || 0);
+      const cp = Number(counts.COPY_TIP || 0);
+      const sh = Number(counts.SHARE_TIP || 0);
+
+      // heurística: compartir demasiado vs consumir poco
+      if (sh >= 12 && (nt + cp) <= 6) return "Aumente aprendizaje";
+      if ((nt + cp) >= 10 && sh <= 2) return "Comparta 1 tip";
+      if (nt + cp + sh === 0) return "Inicie con 1 tip";
+      return "Buen balance";
+    }
+
+    function renderInsights(ins){
+      if (!ins) return;
+
+      if (elActiveDays) elActiveDays.textContent = String(ins.activeDaysLast7 ?? "—");
+
+      const topHour = (ins.peakHoursLast7 && ins.peakHoursLast7[0]) ? ins.peakHoursLast7[0] : null;
+      if (elPeakHour) elPeakHour.textContent = topHour ? `${String(topHour.key).padStart(2,"0")}:00` : "—";
+
+      const topAct = (ins.actionCountsLast7 && ins.actionCountsLast7[0]) ? ins.actionCountsLast7[0] : null;
+      if (elTopAction) elTopAction.textContent = topAct ? niceActionLabel(topAct.key) : "—";
+
+      if (elHealthHint) elHealthHint.textContent = calcBalance(ins);
+
+      if (elActionList){
+        const rows = (ins.actionCountsLast7 || []).slice(0,5);
+        elActionList.innerHTML = rows.length ? rows.map(r => (
+          `<li><span>${niceActionLabel(r.key)}</span><b>${r.value}</b></li>`
+        )).join("") : `<li><span>Sin acciones registradas</span><b>—</b></li>`;
+      }
+
+      if (elHourList){
+        const rows = (ins.peakHoursLast7 || []).slice(0,5);
+        elHourList.innerHTML = rows.length ? rows.map(r => (
+          `<li><span>Hora ${String(r.key).padStart(2,"0")}:00</span><b>${r.value}</b></li>`
+        )).join("") : `<li><span>Sin horas pico</span><b>—</b></li>`;
+      }
+    }
+
+    let lastInsights = null;
+    async function loadInsights(force){
+      // cache corto en memoria (evitar golpear el backend)
+      if (!force && lastInsights && (Date.now() - lastInsights._ts) < 15_000) {
+        renderInsights(lastInsights);
+        return;
+      }
+      try{
+        const ins = await apiFetch(ENDPOINT_INSIGHTS, { method:"GET" });
+        if (ins) {
+          ins._ts = Date.now();
+          lastInsights = ins;
+        }
+        renderInsights(ins);
+      }catch{}
+    }
+
+    document.getElementById("btnInsights")?.addEventListener("click", async () => {
+      await loadInsights(true);
+      toast("📊 Estadísticas actualizadas");
+    });
+
+    /* =========================
+       FX Canvas
+       ========================= */
     const canvas = document.getElementById("fxCanvas");
     const ctx = canvas?.getContext("2d", { alpha:true });
     let dots = [], raf = null;
@@ -593,7 +874,9 @@
     });
     resize(); initDots(); draw();
 
-    // Música (si no hay source, solo quedará en OFF/AUTO sin reproducir)
+    /* =========================
+       Música
+       ========================= */
     const audio = document.getElementById("bgMusic");
     const btnMusic = document.getElementById("btnMusic");
     const audioState = document.getElementById("audioState");
@@ -632,17 +915,26 @@
 
     updateAudioUI();
 
+    /* =========================
+       Init
+       ========================= */
     (async function init(){
       const hc = document.getElementById("historyCount");
       if (hc) hc.textContent = String((historyGet()||[]).length);
+
       setTopic(prefs.topic || "seguridad");
+
       await loadMe();
       await track();
+
+      await loadInsights(true);
+
+      // refresco suave
       setInterval(track, 30000);
+      setInterval(()=>loadInsights(false), 45000);
     })();
 
   });
   </script>
 </body>
 </html>
-
