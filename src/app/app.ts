@@ -1,8 +1,10 @@
 // app.ts
 import {
   AfterViewInit,
+  ChangeDetectorRef,
   Component,
   ElementRef,
+  NgZone,
   OnDestroy,
   OnInit,
   ViewChild,
@@ -35,6 +37,10 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
   private api = inject(VisitsApiService);
   private fx = inject(CanvasFxService);
   private audioSrv = inject(AudioService);
+
+  // ✅ IMPORTANTE para que Angular repinte cuando llega SSE/fetch
+  private zone = inject(NgZone);
+  private cdr = inject(ChangeDetectorRef);
 
   private readonly PAGE_KEY = 'visits';
 
@@ -104,6 +110,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
       });
     }
 
+    // ✅ Carga inicial (sin botón)
     void this.loadMe();
     void this.track();
     void this.loadInsights(true);
@@ -111,8 +118,9 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     // ✅ SSE realtime
     this.startRealtimeSse();
 
+    // ✅ refrescos automáticos
     this.tTrack = setInterval(() => void this.track(), 30_000);
-    this.tInsights = setInterval(() => void this.loadInsights(false), 45_000);
+    this.tInsights = setInterval(() => void this.loadInsights(false), 25_000);
   }
 
   ngOnDestroy(): void {
@@ -135,7 +143,6 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
   onNewTip() {
     this.newTip();
     void this.sendEvent('NEW_TIP');
-    void this.loadInsights(true);
   }
 
   async onCopy() {
@@ -143,7 +150,6 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     const ok = await this.copyText(text);
     this.toast(ok ? '✅ Copiado al portapapeles' : '⚠️ No se pudo copiar');
     if (ok) await this.sendEvent('COPY_TIP');
-    await this.loadInsights(true);
   }
 
   async onShare() {
@@ -155,12 +161,6 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     } else {
       await this.sendEvent('SHARE_TIP');
     }
-    await this.loadInsights(true);
-  }
-
-  refreshInsights() {
-    void this.loadInsights(true);
-    this.toast('📊 Estadísticas actualizadas');
   }
 
   toggleMusic() {
@@ -177,6 +177,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
       this.showAudioBanner = true;
     }
     this.persistPrefs();
+    this.cdr.markForCheck();
   }
 
   stopMusic() {
@@ -184,6 +185,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     this.musicState = 'OFF';
     this.showAudioBanner = false;
     this.persistPrefs();
+    this.cdr.markForCheck();
   }
 
   // ===== internals =====
@@ -202,7 +204,11 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
   private toast(msg: string) {
     this.toastMsg = msg;
     this.toastVisible = true;
-    setTimeout(() => (this.toastVisible = false), 1400);
+    this.cdr.markForCheck();
+    setTimeout(() => {
+      this.toastVisible = false;
+      this.cdr.markForCheck();
+    }, 1400);
   }
 
   private computeProgress() {
@@ -228,8 +234,11 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
       if (data) {
         this.profile = data;
         this.computeProgress();
+        this.cdr.markForCheck();
       }
-    } catch {}
+    } catch (e) {
+      console.error('[loadMe] fallo', e);
+    }
   }
 
   private async track() {
@@ -239,8 +248,11 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
       if (data) {
         this.profile = data;
         this.computeProgress();
+        this.cdr.markForCheck();
       }
-    } catch {}
+    } catch (e) {
+      console.error('[track] fallo', e);
+    }
   }
 
   private async sendEvent(type: string, refOverride?: string) {
@@ -251,31 +263,53 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
       topic: this.topic,
       ref: refOverride || this.ref || 'direct',
     };
+
     try {
       const res = await this.api.apiFetch<any>(event, this.visitorId, {
         method: 'POST',
         body: JSON.stringify(payload),
       });
+
       if (res) {
         this.profile = res;
         this.computeProgress();
       }
-    } catch {}
+
+      // ✅ SIN BOTÓN: refresco inmediato de insights tras cada acción
+      await this.loadInsights(true);
+      this.cdr.markForCheck();
+    } catch (e) {
+      console.error('[sendEvent] fallo', e);
+    }
   }
 
   private async loadInsights(force: boolean) {
     const now = Date.now();
-    if (!force && (this.insights as any)?._ts && now - (this.insights as any)._ts < 15_000) return;
+    const lastTs = Number((this.insights as any)?._ts || 0);
+
+    // ✅ No bloquee la primera carga
+    if (!force && lastTs && now - lastTs < 15_000) return;
 
     try {
       const { insights } = this.endpoints();
       const ins = await this.api.apiFetch<any>(insights, this.visitorId, { method: 'GET' });
+
       if (ins) {
         (ins as any)._ts = now;
         this.insights = ins;
+      } else {
+        // fallback limpio para que no quede en "—"
+        this.insights = { activeDaysLast7: 0, peakHoursLast7: [], actionCountsLast7: [] } as any;
       }
+
       this.deriveInsightsUI();
-    } catch {}
+      this.cdr.markForCheck();
+    } catch (e) {
+      console.error('[loadInsights] fallo', e);
+      this.insights = { activeDaysLast7: 0, peakHoursLast7: [], actionCountsLast7: [] } as any;
+      this.deriveInsightsUI();
+      this.cdr.markForCheck();
+    }
   }
 
   private deriveInsightsUI() {
@@ -314,7 +348,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     this.healthHint = calcBalance();
   }
 
-  // ✅ SSE: escuchar eventos con nombre (porque backend usa .name("online"), etc.)
+  // ✅ SSE: asegurar que actualice UI dentro de NgZone
   private startRealtimeSse() {
     const { stream } = this.endpoints();
 
@@ -322,44 +356,61 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     this.es = this.api.openSse(stream);
 
     const safeJson = (ev: MessageEvent) => {
-      try { return JSON.parse(String(ev.data ?? '{}')); } catch { return null; }
+      try { return JSON.parse(String((ev as any).data ?? '{}')); } catch { return null; }
+    };
+
+    const runUi = (fn: () => void) => {
+      this.zone.run(() => {
+        fn();
+        this.cdr.markForCheck();
+      });
     };
 
     this.es.addEventListener('hello', (ev: any) => {
       const msg = safeJson(ev);
-      if (msg?.online != null) this.onlineNow = Number(msg.online) || 0;
+      runUi(() => {
+        if (msg?.online != null) this.onlineNow = Number(msg.online) || 0;
+      });
     });
 
     this.es.addEventListener('online', (ev: any) => {
       const msg = safeJson(ev);
-      if (msg?.online != null) this.onlineNow = Number(msg.online) || 0;
+      runUi(() => {
+        if (msg?.online != null) this.onlineNow = Number(msg.online) || 0;
+      });
     });
 
     this.es.addEventListener('profile', (ev: any) => {
       const msg = safeJson(ev);
-      if (msg) {
-        this.profile = msg;
-        this.computeProgress();
-      }
+      runUi(() => {
+        if (msg) {
+          this.profile = msg;
+          this.computeProgress();
+        }
+      });
     });
 
     this.es.addEventListener('total', (ev: any) => {
       const msg = safeJson(ev);
-      // msg = { page, total }
-      if (msg?.total != null) this.profile = { ...this.profile, total: Number(msg.total) || 0 };
+      runUi(() => {
+        if (msg?.total != null) {
+          this.profile = { ...this.profile, total: Number(msg.total) || 0 };
+        }
+      });
     });
 
     this.es.addEventListener('insights', (ev: any) => {
       const msg = safeJson(ev);
-      if (msg) {
-        (msg as any)._ts = Date.now();
-        this.insights = msg;
-        this.deriveInsightsUI();
-      }
+      runUi(() => {
+        if (msg) {
+          (msg as any)._ts = Date.now();
+          this.insights = msg;
+          this.deriveInsightsUI();
+        }
+      });
     });
 
     this.es.onerror = () => {
-      // reconexión simple
       this.es?.close();
       this.es = undefined;
       setTimeout(() => this.startRealtimeSse(), 1500);
