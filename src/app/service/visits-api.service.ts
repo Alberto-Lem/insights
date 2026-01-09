@@ -7,16 +7,17 @@ export class VisitsApiService {
   endpoints(pageKey: string, visitorId?: string) {
     const page = encodeURIComponent(pageKey);
     const vid = visitorId ? `&vid=${encodeURIComponent(visitorId)}` : '';
+    const qp = `?page=${page}${vid}`;
 
     return {
-      track: `${this.API_BASE}/api/public/visits/track?page=${page}`,
-      me: `${this.API_BASE}/api/public/visits/me?page=${page}`,
-      event: `${this.API_BASE}/api/public/visits/event`,
-      insights: `${this.API_BASE}/api/public/visits/insights/me?page=${page}`,
+      track: `${this.API_BASE}/api/public/visits/track${qp}`,
+      me: `${this.API_BASE}/api/public/visits/me${qp}`,
+      insights: `${this.API_BASE}/api/public/visits/insights/me${qp}`,
+      event: `${this.API_BASE}/api/public/visits/event`, // POST con header X-Visitor-Id
 
-      // ✅ realtime (EventSource no manda headers, por eso vid va en query)
-      stream: `${this.API_BASE}/api/public/visits/stream?page=${page}${vid}`,
-      online: `${this.API_BASE}/api/public/visits/online?page=${page}${vid}`,
+      // realtime
+      stream: `${this.API_BASE}/api/public/visits/stream${qp}`,
+      online: `${this.API_BASE}/api/public/visits/online${qp}`,
     };
   }
 

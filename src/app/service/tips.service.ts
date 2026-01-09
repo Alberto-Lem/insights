@@ -1,10 +1,14 @@
-import { Injectable } from '@angular/core';
+// src/app/service/tips.service.ts
+import { Injectable, inject } from '@angular/core';
 import { Tip, Topic } from '../models/models';
-import { pick } from '../utils/utils';
-import { TIPS } from '../data/tips'; // <- viene de index.ts
+import { TIPS } from '../data/tips';
+import { StorageService } from './storage.service';
+import { TipRankerService } from './tip-ranker.service';
 
 @Injectable({ providedIn: 'root' })
 export class TipsService {
+  private storage = inject(StorageService);
+  private ranker = inject(TipRankerService);
 
   getHint(topic: Topic): string {
     if (topic === 'seguridad') return 'Tip corto de ciberseguridad. Ideal para compartir.';
@@ -13,13 +17,22 @@ export class TipsService {
     return 'Higiene digital y descanso mental en pocos pasos.';
   }
 
-  getAllByTopic(topic: Topic): Tip[] {
-    return TIPS.filter(t => t.topic === topic);
-  }
+  /**
+   * Devuelve un tip “inteligente” (evita repetición, pondera aprendizaje local, etc.)
+   * y registra "seen" + historial por ID.
+   */
+  nextTip(topic: Topic): Tip {
+    const history = this.storage.getTipHistoryIds();
+    const stats = this.storage.getTipStats();
+    const ctx = this.ranker.buildContext();
 
-  newTip(topic: Topic): Tip {
-    const pool = this.getAllByTopic(topic);
-    return pick(pool.length ? pool : TIPS);
+    const tip = this.ranker.pickBest(topic, TIPS, history, stats, ctx);
+
+    // registrar “seen” una sola vez (aquí)
+    this.storage.pushTipHistoryId(tip.id, 40);
+    this.storage.bumpTipStat(tip.id, 'seen');
+
+    return tip;
   }
 
   toText(t: Tip): string {

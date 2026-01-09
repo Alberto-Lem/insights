@@ -2,9 +2,11 @@
 export type Topic = 'seguridad' | 'estudio' | 'productividad' | 'bienestar';
 
 export type Tip = {
+  id: string;                 // ✅ nuevo
   topic: Topic;
   title: string;
   steps: readonly string[];
+  tags?: readonly string[];   // ✅ nuevo (opcional)
 };
 
 export type Profile = {
@@ -23,5 +25,18 @@ export type Insights = {
   _ts?: number;
 };
 
-// Esto le ayuda a tipar contadores sin error de index signature
-export type CountsMap = Record<string, number>;
+export type TipContext = {
+  hour: number;          // 0-23
+  day: number;           // 0-6 (Dom=0)
+  isWeekend: boolean;
+  bucket: 'morning' | 'afternoon' | 'evening' | 'night';
+};
+
+export type TipStat = {  // aprendizaje local por tip
+  seen: number;
+  copied: number;
+  shared: number;
+  lastSeen?: number;     // epoch ms
+};
+
+export type TipStatsMap = Record<string, TipStat>;

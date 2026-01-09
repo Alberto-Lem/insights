@@ -1,6 +1,7 @@
-// app.ts
+// src/app/app.ts
 import {
   AfterViewInit,
+  ChangeDetectionStrategy,
   ChangeDetectorRef,
   Component,
   ElementRef,
@@ -21,12 +22,15 @@ import { AudioService } from './service/audio.service';
 import { Insights, Profile, Tip, Topic } from './models/models';
 import { getRefFromUrl } from './utils/utils';
 
+type TipWithId = Tip & { id?: string };
+
 @Component({
   selector: 'app-root',
   standalone: true,
   imports: [CommonModule],
   templateUrl: './app.html',
-  styleUrl: './app.scss',
+  styleUrls: ['./app.scss'], // ✅ fijo: styleUrls
+  changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class App implements OnInit, AfterViewInit, OnDestroy {
   @ViewChild('fxCanvas') fxCanvas?: ElementRef<HTMLCanvasElement>;
@@ -38,7 +42,6 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
   private fx = inject(CanvasFxService);
   private audioSrv = inject(AudioService);
 
-  // ✅ IMPORTANTE para que Angular repinte cuando llega SSE/fetch
   private zone = inject(NgZone);
   private cdr = inject(ChangeDetectorRef);
 
@@ -46,7 +49,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
 
   topic: Topic = 'seguridad';
   hint = '';
-  currentTip: Tip | null = null;
+  currentTip: TipWithId | null = null;
 
   profile: Profile = {};
   insights: Insights = {};
@@ -66,14 +69,14 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
   topActionLabel = '—';
   healthHint = '—';
 
-  // ✅ realtime
   onlineNow: number | null = null;
   private es?: EventSource;
 
   private visitorId = '';
   private ref = 'direct';
-  private tTrack: any = null;
-  private tInsights: any = null;
+
+  private tTrack?: ReturnType<typeof setInterval>;
+  private tInsights?: ReturnType<typeof setInterval>;
 
   get musicLabel() {
     return this.musicState === 'ON'
@@ -92,9 +95,10 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     this.musicState = prefs.musicState ?? 'AUTO';
 
     this.hint = this.tipsSrv.getHint(this.topic);
-    this.historyCount = this.storage.getHistory().length;
+    this.historyCount = this.storage.getTipHistoryIds().length;
 
-    this.newTip();
+    this.pickNewTip();
+    this.cdr.markForCheck();
   }
 
   ngAfterViewInit(): void {
@@ -110,15 +114,12 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
       });
     }
 
-    // ✅ Carga inicial (sin botón)
     void this.loadMe();
     void this.track();
     void this.loadInsights(true);
 
-    // ✅ SSE realtime
     this.startRealtimeSse();
 
-    // ✅ refrescos automáticos
     this.tTrack = setInterval(() => void this.track(), 30_000);
     this.tInsights = setInterval(() => void this.loadInsights(false), 25_000);
   }
@@ -136,24 +137,37 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     this.topic = t;
     this.hint = this.tipsSrv.getHint(t);
     this.persistPrefs();
-    this.newTip();
+
+    this.pickNewTip();
     void this.sendEvent('TOPIC', t);
+
+    this.cdr.markForCheck();
   }
 
   onNewTip() {
-    this.newTip();
+    this.pickNewTip();
     void this.sendEvent('NEW_TIP');
+    this.cdr.markForCheck();
   }
 
   async onCopy() {
     const text = this.currentTip ? this.tipsSrv.toText(this.currentTip) : '';
     const ok = await this.copyText(text);
+
     this.toast(ok ? '✅ Copiado al portapapeles' : '⚠️ No se pudo copiar');
+
+    // ✅ aprendizaje local: SOLO si su StorageService está pensado para esto aquí.
+    // Si TipsService ya registra copied/shared, muévalo allá también para no duplicar.
+    if (ok && this.currentTip?.id) this.storage.bumpTipStat(this.currentTip.id, 'copied');
+
     if (ok) await this.sendEvent('COPY_TIP');
   }
 
   async onShare() {
     const text = this.currentTip ? this.tipsSrv.toText(this.currentTip) : '';
+
+    if (this.currentTip?.id) this.storage.bumpTipStat(this.currentTip.id, 'shared');
+
     const ok = await this.shareNative(text);
     if (!ok) {
       await this.sendEvent('SHARE_TIP', 'whatsapp');
@@ -176,6 +190,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
       this.musicState = 'AUTO';
       this.showAudioBanner = true;
     }
+
     this.persistPrefs();
     this.cdr.markForCheck();
   }
@@ -184,17 +199,21 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     this.audioSrv.stop();
     this.musicState = 'OFF';
     this.showAudioBanner = false;
+
     this.persistPrefs();
     this.cdr.markForCheck();
   }
 
   // ===== internals =====
-  private newTip() {
-    this.currentTip = this.tipsSrv.newTip(this.topic);
-    const text = this.tipsSrv.toText(this.currentTip);
-    const h = this.storage.pushHistory(text, 7);
-    this.historyCount = h.length;
+  private pickNewTip() {
+    // ✅ Un solo origen: TipsService decide tip + historial/seen (según su diseño).
+    this.currentTip = this.tipsSrv.nextTip(this.topic) as TipWithId;
+
+    // ✅ Conteo se deriva desde storage (ya actualizado por TipsService).
+    this.historyCount = this.storage.getTipHistoryIds().length;
+
     if (navigator.vibrate) navigator.vibrate(18);
+    this.cdr.markForCheck();
   }
 
   private persistPrefs() {
@@ -205,6 +224,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     this.toastMsg = msg;
     this.toastVisible = true;
     this.cdr.markForCheck();
+
     setTimeout(() => {
       this.toastVisible = false;
       this.cdr.markForCheck();
@@ -230,7 +250,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
   private async loadMe() {
     try {
       const { me } = this.endpoints();
-      const data = await this.api.apiFetch<any>(me, this.visitorId, { method: 'GET' });
+      const data = await this.api.apiFetch<Profile>(me, this.visitorId, { method: 'GET' });
       if (data) {
         this.profile = data;
         this.computeProgress();
@@ -244,7 +264,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
   private async track() {
     try {
       const { track } = this.endpoints();
-      const data = await this.api.apiFetch<any>(track, this.visitorId, { method: 'GET' });
+      const data = await this.api.apiFetch<Profile>(track, this.visitorId, { method: 'GET' });
       if (data) {
         this.profile = data;
         this.computeProgress();
@@ -257,6 +277,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
 
   private async sendEvent(type: string, refOverride?: string) {
     const { event } = this.endpoints();
+
     const payload = {
       page: this.PAGE_KEY,
       type,
@@ -265,7 +286,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     };
 
     try {
-      const res = await this.api.apiFetch<any>(event, this.visitorId, {
+      const res = await this.api.apiFetch<Profile>(event, this.visitorId, {
         method: 'POST',
         body: JSON.stringify(payload),
       });
@@ -275,7 +296,6 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
         this.computeProgress();
       }
 
-      // ✅ SIN BOTÓN: refresco inmediato de insights tras cada acción
       await this.loadInsights(true);
       this.cdr.markForCheck();
     } catch (e) {
@@ -287,26 +307,24 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     const now = Date.now();
     const lastTs = Number((this.insights as any)?._ts || 0);
 
-    // ✅ No bloquee la primera carga
     if (!force && lastTs && now - lastTs < 15_000) return;
 
     try {
       const { insights } = this.endpoints();
-      const ins = await this.api.apiFetch<any>(insights, this.visitorId, { method: 'GET' });
+      const ins = await this.api.apiFetch<Insights>(insights, this.visitorId, { method: 'GET' });
 
       if (ins) {
         (ins as any)._ts = now;
         this.insights = ins;
       } else {
-        // fallback limpio para que no quede en "—"
-        this.insights = { activeDaysLast7: 0, peakHoursLast7: [], actionCountsLast7: [] } as any;
+        this.insights = { activeDaysLast7: 0, peakHoursLast7: [], actionCountsLast7: [] };
       }
 
       this.deriveInsightsUI();
       this.cdr.markForCheck();
     } catch (e) {
       console.error('[loadInsights] fallo', e);
-      this.insights = { activeDaysLast7: 0, peakHoursLast7: [], actionCountsLast7: [] } as any;
+      this.insights = { activeDaysLast7: 0, peakHoursLast7: [], actionCountsLast7: [] };
       this.deriveInsightsUI();
       this.cdr.markForCheck();
     }
@@ -328,9 +346,11 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     const calcBalance = () => {
       const counts: Record<string, number> = {};
       for (const p of this.insights.actionCountsLast7 ?? []) counts[p.key] = Number(p.value || 0);
+
       const nt = Number(counts['NEW_TIP'] || 0);
       const cp = Number(counts['COPY_TIP'] || 0);
       const sh = Number(counts['SHARE_TIP'] || 0);
+
       if (sh >= 12 && nt + cp <= 6) return 'Aumente aprendizaje';
       if (nt + cp >= 10 && sh <= 2) return 'Comparta 1 tip';
       if (nt + cp + sh === 0) return 'Inicie con 1 tip';
@@ -348,15 +368,27 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     this.healthHint = calcBalance();
   }
 
-  // ✅ SSE: asegurar que actualice UI dentro de NgZone
+  private tOnline?: ReturnType<typeof setInterval>;
+
   private startRealtimeSse() {
     const { stream } = this.endpoints();
 
+    // cortar lo anterior
     this.es?.close();
+    this.es = undefined;
+    if (this.tOnline) {
+      clearInterval(this.tOnline);
+      this.tOnline = undefined;
+    }
+
     this.es = this.api.openSse(stream);
 
     const safeJson = (ev: MessageEvent) => {
-      try { return JSON.parse(String((ev as any).data ?? '{}')); } catch { return null; }
+      try {
+        return JSON.parse(String((ev as any).data ?? '{}'));
+      } catch {
+        return null;
+      }
     };
 
     const runUi = (fn: () => void) => {
@@ -366,35 +398,20 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
       });
     };
 
-    this.es.addEventListener('hello', (ev: any) => {
-      const msg = safeJson(ev);
-      runUi(() => {
-        if (msg?.online != null) this.onlineNow = Number(msg.online) || 0;
-      });
-    });
+    // eventos
+    const setOnline = (msg: any) => {
+      if (msg?.online != null) this.onlineNow = Number(msg.online) || 0;
+    };
 
-    this.es.addEventListener('online', (ev: any) => {
-      const msg = safeJson(ev);
-      runUi(() => {
-        if (msg?.online != null) this.onlineNow = Number(msg.online) || 0;
-      });
-    });
+    this.es.addEventListener('hello', (ev: any) => runUi(() => setOnline(safeJson(ev))));
+    this.es.addEventListener('online', (ev: any) => runUi(() => setOnline(safeJson(ev))));
 
     this.es.addEventListener('profile', (ev: any) => {
       const msg = safeJson(ev);
       runUi(() => {
         if (msg) {
-          this.profile = msg;
+          this.profile = msg as any;
           this.computeProgress();
-        }
-      });
-    });
-
-    this.es.addEventListener('total', (ev: any) => {
-      const msg = safeJson(ev);
-      runUi(() => {
-        if (msg?.total != null) {
-          this.profile = { ...this.profile, total: Number(msg.total) || 0 };
         }
       });
     });
@@ -404,15 +421,29 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
       runUi(() => {
         if (msg) {
           (msg as any)._ts = Date.now();
-          this.insights = msg;
+          this.insights = msg as any;
           this.deriveInsightsUI();
         }
       });
     });
 
+    // error → fallback online + reintento stream
     this.es.onerror = () => {
       this.es?.close();
       this.es = undefined;
+
+      // ✅ fallback: polling online
+      const { online } = this.endpoints();
+      this.tOnline = setInterval(async () => {
+        try {
+          const o = await this.api.apiFetch<any>(online, this.visitorId, { method: 'GET' });
+          this.zone.run(() => {
+            if (o?.online != null) this.onlineNow = Number(o.online) || 0;
+            this.cdr.markForCheck();
+          });
+        } catch {}
+      }, 12_000);
+
       setTimeout(() => this.startRealtimeSse(), 1500);
     };
   }
@@ -424,6 +455,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
         return true;
       }
     } catch {}
+
     try {
       const ta = document.createElement('textarea');
       ta.value = text;
