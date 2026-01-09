@@ -139,7 +139,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     this.persistPrefs();
 
     this.pickNewTip();
-    void this.sendEvent('TOPIC', t);
+    void this.sendEvent('TOPIC');
 
     this.cdr.markForCheck();
   }
