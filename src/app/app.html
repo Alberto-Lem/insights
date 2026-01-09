@@ -1,59 +1,104 @@
+<!-- tips.component.html (o su template) -->
 <canvas #fxCanvas id="fxCanvas"></canvas>
 
 <div class="wrap">
   <div class="card">
-    <header>
+    <header class="top">
       <div class="brand">
         <b>SystemBlacklem · Tips</b>
         <span>Tip útil en 15 segundos (seguridad, estudio, productividad, bienestar)</span>
+        <small class="subline">En vivo · SSE activo · XP y racha en tiempo real</small>
       </div>
 
       <div class="stats">
-        <div class="pill">Visitas: <b>{{ profile.total ?? '—' }}</b></div>
-        <div class="pill">Online: <b>{{ onlineNow ?? '—' }}</b></div>
-        <div class="pill">Racha: <b>{{ profile.streak ?? '—' }}</b></div>
-        <div class="pill">Nivel: <b>{{ profile.level ?? '—' }}</b></div>
-        <button class="btn" type="button" (click)="toggleMusic()">{{ musicLabel }}</button>
+        <div class="pill">
+          <span class="ico" aria-hidden="true">👁️</span>
+          Visitas: <b>{{ profile.total ?? '—' }}</b>
+        </div>
+
+        <div class="pill pill-online" [class.isOn]="(onlineNow ?? 0) > 0">
+          <span class="ico-eye" aria-hidden="true"></span>
+          Online: <b>{{ onlineNow ?? '—' }}</b>
+          <span class="pulseDot" aria-hidden="true"></span>
+        </div>
+
+        <div class="pill">
+          <span class="ico" aria-hidden="true">🔥</span>
+          Racha: <b>{{ profile.streak ?? '—' }}</b>
+        </div>
+
+        <div class="pill">
+          <span class="ico" aria-hidden="true">⭐</span>
+          Nivel: <b>{{ profile.level ?? '—' }}</b>
+        </div>
+
+        <button class="btn" type="button" (click)="toggleMusic()">
+          <span class="ico" aria-hidden="true">🎵</span>{{ musicLabel }}
+        </button>
       </div>
     </header>
 
     <main>
       <!-- IZQUIERDA -->
       <section class="panel">
-        <div class="chips">
+        <div class="chips" role="tablist" aria-label="Temas">
           <button class="chip" type="button"
             [attr.aria-pressed]="topic==='seguridad'"
-            (click)="setTopic('seguridad')">Seguridad</button>
+            (click)="setTopic('seguridad')">
+            <span class="chipIco" aria-hidden="true">🛡️</span>Seguridad
+          </button>
 
           <button class="chip" type="button"
             [attr.aria-pressed]="topic==='estudio'"
-            (click)="setTopic('estudio')">Estudio</button>
+            (click)="setTopic('estudio')">
+            <span class="chipIco" aria-hidden="true">📚</span>Estudio
+          </button>
 
           <button class="chip" type="button"
             [attr.aria-pressed]="topic==='productividad'"
-            (click)="setTopic('productividad')">Productividad</button>
+            (click)="setTopic('productividad')">
+            <span class="chipIco" aria-hidden="true">⚡</span>Productividad
+          </button>
 
           <button class="chip" type="button"
             [attr.aria-pressed]="topic==='bienestar'"
-            (click)="setTopic('bienestar')">Bienestar</button>
+            (click)="setTopic('bienestar')">
+            <span class="chipIco" aria-hidden="true">🧘</span>Bienestar
+          </button>
         </div>
 
-        <div id="hint">{{ hint }}</div>
+        <div class="hint" id="hint">
+          <span class="hintDot" aria-hidden="true"></span>
+          <span>{{ hint }}</span>
+        </div>
 
-        <h2 id="tipTitle">{{ currentTip?.title ?? 'Cargando tip…' }}</h2>
+        <h2 class="tipTitle" id="tipTitle">
+          {{ currentTip?.title ?? 'Cargando tip…' }}
+        </h2>
 
-        <ul id="tipSteps">
-          <li *ngFor="let s of (currentTip?.steps ?? []); let i = index">
+        <ul class="tipSteps" id="tipSteps">
+          <li *ngFor="let s of (currentTip?.steps ?? []); let i = index" class="step">
             <span class="n">{{ i + 1 }}</span>
-            <span>{{ s }}</span>
+            <span class="txt">{{ s }}</span>
           </li>
         </ul>
 
         <div class="actions">
-          <button class="btn primary" type="button" (click)="onNewTip()">🔄 Nuevo tip</button>
-          <button class="btn" type="button" (click)="onCopy()">📋 Copiar</button>
-          <button class="btn" type="button" (click)="onShare()">📲 Compartir</button>
-          <button class="btn ghost" type="button" (click)="refreshInsights()">📊 Mis estadísticas</button>
+          <button class="btn primary" type="button" (click)="onNewTip()">
+            <span class="ico" aria-hidden="true">🔄</span>Nuevo tip
+          </button>
+
+          <button class="btn" type="button" (click)="onCopy()">
+            <span class="ico" aria-hidden="true">📋</span>Copiar
+          </button>
+
+          <button class="btn" type="button" (click)="onShare()">
+            <span class="ico" aria-hidden="true">📲</span>Compartir
+          </button>
+
+          <button class="btn ghost" type="button" (click)="refreshInsights()">
+            <span class="ico" aria-hidden="true">📊</span>Mis estadísticas
+          </button>
         </div>
       </section>
 
@@ -62,9 +107,18 @@
         <h3>Estado</h3>
 
         <div class="mini">
-          <div class="row"><span>Historial (local)</span> <b>{{ historyCount }}</b></div>
-          <div class="row"><span>Audio</span> <b>{{ musicLabel }}</b></div>
-          <div class="row"><span>Acciones (7 días)</span> <b>{{ insights.activeDaysLast7 ?? '—' }}</b></div>
+          <div class="row">
+            <span>Historial (local)</span>
+            <b>{{ historyCount }}</b>
+          </div>
+          <div class="row">
+            <span>Audio</span>
+            <b>{{ musicLabel }}</b>
+          </div>
+          <div class="row">
+            <span>Acciones (7 días)</span>
+            <b>{{ insights.activeDaysLast7 ?? '—' }}</b>
+          </div>
         </div>
 
         <div class="sep"></div>
@@ -90,9 +144,21 @@
         <h3>Insights (últimos 7 días)</h3>
 
         <div class="tagRow">
-          <div class="tag"><span>⏳</span><small>{{ peakHourLabel }}</small><span style="opacity:.7;">Hora pico</span></div>
-          <div class="tag"><span>🔥</span><small>{{ topActionLabel }}</small><span style="opacity:.7;">Acción top</span></div>
-          <div class="tag ok"><span>✅</span><small>{{ healthHint }}</small><span style="opacity:.7;">Balance</span></div>
+          <div class="tag">
+            <span aria-hidden="true">⏳</span>
+            <small>{{ peakHourLabel }}</small>
+            <span class="tagSub">Hora pico</span>
+          </div>
+          <div class="tag">
+            <span aria-hidden="true">🔥</span>
+            <small>{{ topActionLabel }}</small>
+            <span class="tagSub">Acción top</span>
+          </div>
+          <div class="tag ok">
+            <span aria-hidden="true">✅</span>
+            <small>{{ healthHint }}</small>
+            <span class="tagSub">Balance</span>
+          </div>
         </div>
 
         <ul class="list">
@@ -109,11 +175,11 @@
           <li *ngIf="hourRows.length===0"><span>Sin horas pico</span><b>—</b></li>
         </ul>
 
-        <div id="audioBanner" *ngIf="showAudioBanner">
+        <div class="audioBanner" *ngIf="showAudioBanner">
           <span>Para activar música, toque “Habilitar”.</span>
-          <div style="display:flex; gap:8px;">
+          <div class="audioBtns">
             <button class="btn" type="button" (click)="startMusic()">Habilitar</button>
-            <button class="btn" type="button" (click)="stopMusic()">No gracias</button>
+            <button class="btn ghost" type="button" (click)="stopMusic()">No gracias</button>
           </div>
         </div>
       </aside>
@@ -125,4 +191,6 @@
   <!-- <source src="assets/audio.mp3" type="audio/mpeg"> -->
 </audio>
 
-<div id="toast" role="status" aria-live="polite" [class.show]="toastVisible">{{ toastMsg }}</div>
+<div class="toast" role="status" aria-live="polite" [class.show]="toastVisible">
+  {{ toastMsg }}
+</div>
