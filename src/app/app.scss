@@ -84,3 +84,7 @@ main{ padding: 16px 18px 18px; display:grid; grid-template-columns: 1.15fr .85fr
   background: rgba(0,0,0,.55); border:1px solid rgba(255,255,255,.16); color: var(--txt);
   box-shadow: var(--shadow); transition: opacity .18s ease, transform .18s ease; pointer-events:none; }
 #toast.show{ opacity:1; transform: translateX(-50%) translateY(0); }
+/* opcional: resalta Online si hay valor */
+.pill b {
+  color: var(--txt);
+}

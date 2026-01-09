@@ -10,6 +10,7 @@
 
       <div class="stats">
         <div class="pill">Visitas: <b>{{ profile.total ?? '—' }}</b></div>
+        <div class="pill">Online: <b>{{ onlineNow ?? '—' }}</b></div>
         <div class="pill">Racha: <b>{{ profile.streak ?? '—' }}</b></div>
         <div class="pill">Nivel: <b>{{ profile.level ?? '—' }}</b></div>
         <button class="btn" type="button" (click)="toggleMusic()">{{ musicLabel }}</button>

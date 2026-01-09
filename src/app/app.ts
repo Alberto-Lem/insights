@@ -7,13 +7,15 @@ import {
   ViewChild,
   inject,
 } from '@angular/core';
+import { CommonModule } from '@angular/common';
+
 import { StorageService } from './service/storage.service';
 import { TipsService } from './service/tips.service';
 import { VisitsApiService } from './service/visits-api.service';
 import { CanvasFxService } from './service/canvas-fx.service';
 import { AudioService } from './service/audio.service';
+
 import { Insights, Profile, Tip, Topic } from './models/models';
-import { CommonModule } from '@angular/common';
 import { getRefFromUrl } from './utils/utils';
 
 @Component({
@@ -57,6 +59,11 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
   topActionLabel = '—';
   healthHint = '—';
 
+  // ✅ realtime
+  onlineNow: number | null = null;
+  private es?: EventSource;
+  private tOnline: any = null;
+
   private visitorId = '';
   private ref = 'direct';
   private tTrack: any = null;
@@ -97,18 +104,30 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
       });
     }
 
+    // ===== inicial =====
     void this.loadMe();
     void this.track();
     void this.loadInsights(true);
 
+    // ✅ realtime
+    this.startRealtimeSse();
+    // fallback: si el SSE falla, igual puede mantener online por polling
+    this.tOnline = setInterval(() => void this.loadOnline(), 15_000);
+
+    // ===== timers existentes =====
     this.tTrack = setInterval(() => void this.track(), 30_000);
     this.tInsights = setInterval(() => void this.loadInsights(false), 45_000);
   }
 
   ngOnDestroy(): void {
     this.fx.stop();
+
+    this.es?.close();
+    this.es = undefined;
+
     if (this.tTrack) clearInterval(this.tTrack);
     if (this.tInsights) clearInterval(this.tInsights);
+    if (this.tOnline) clearInterval(this.tOnline);
   }
 
   // ===== UI =====
@@ -117,6 +136,8 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     this.hint = this.tipsSrv.getHint(t);
     this.persistPrefs();
     this.newTip();
+
+    void this.sendEvent('TOPIC', t);
   }
 
   onNewTip() {
@@ -205,7 +226,8 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
   }
 
   private endpoints() {
-    return this.api.endpoints(this.PAGE_KEY);
+    // ✅ para SSE pasamos visitorId
+    return this.api.endpoints(this.PAGE_KEY, this.visitorId);
   }
 
   private async loadMe() {
@@ -227,6 +249,24 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
         this.profile = data;
         this.computeProgress();
       }
+    } catch {}
+  }
+
+  private async loadOnline() {
+    try {
+      const { online } = this.endpoints();
+      // Puede devolver { online: number } o number directo; soportamos ambos
+      const data = await fetch(online, { cache: 'no-store' }).then((r) => r.json()).catch(() => null);
+      if (data == null) return;
+
+      const n =
+        typeof data === 'number'
+          ? data
+          : typeof data?.online === 'number'
+          ? data.online
+          : null;
+
+      if (typeof n === 'number') this.onlineNow = n;
     } catch {}
   }
 
@@ -274,6 +314,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
       if (key === 'NEW_TIP') return 'Nuevos tips';
       if (key === 'COPY_TIP') return 'Copias';
       if (key === 'SHARE_TIP') return 'Compartidos';
+      if (key === 'TOPIC') return 'Cambios tema';
       return key || '—';
     };
 
@@ -298,6 +339,53 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     this.peakHourLabel = hours[0] ? String(hours[0].key).padStart(2, '0') + ':00' : '—';
     this.topActionLabel = actions[0] ? nice(actions[0].key) : '—';
     this.healthHint = calcBalance();
+  }
+
+  // ✅ SSE principal
+  private startRealtimeSse() {
+    const { stream } = this.endpoints();
+
+    this.es?.close();
+    this.es = this.api.openSse(stream);
+
+    this.es.onopen = () => {
+      // opcional: marque el online al conectar
+      void this.loadOnline();
+    };
+
+    this.es.onmessage = (ev) => {
+      // Espere JSON en ev.data (lo normal en SSE)
+      // Ejemplos soportados:
+      // 1) {"online":12}
+      // 2) {"profile":{...}, "online":12, "insights":{...}}
+      // 3) {"type":"PING"} (lo ignoramos)
+      try {
+        const msg = JSON.parse(ev.data || '{}');
+
+        if (typeof msg?.online === 'number') this.onlineNow = msg.online;
+
+        if (msg?.profile) {
+          this.profile = msg.profile;
+          this.computeProgress();
+        }
+
+        if (msg?.insights) {
+          msg.insights._ts = Date.now();
+          this.insights = msg.insights;
+          this.deriveInsightsUI();
+        }
+      } catch {
+        // ignore
+      }
+    };
+
+    this.es.onerror = () => {
+      // EventSource suele reintentar solo, pero si el servidor corta duro,
+      // este reinicio ayuda y evita colgar conexiones zombie.
+      this.es?.close();
+      this.es = undefined;
+      setTimeout(() => this.startRealtimeSse(), 1500);
+    };
   }
 
   private async copyText(text: string) {
