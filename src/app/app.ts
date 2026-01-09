@@ -29,7 +29,7 @@ type TipWithId = Tip & { id?: string };
   standalone: true,
   imports: [CommonModule],
   templateUrl: './app.html',
-  styleUrls: ['./app.scss'], // ✅ fijo: styleUrls
+  styleUrls: ['./app.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class App implements OnInit, AfterViewInit, OnDestroy {
@@ -77,6 +77,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
 
   private tTrack?: ReturnType<typeof setInterval>;
   private tInsights?: ReturnType<typeof setInterval>;
+  private tOnline?: ReturnType<typeof setInterval>;
 
   get musicLabel() {
     return this.musicState === 'ON'
@@ -130,6 +131,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
 
     if (this.tTrack) clearInterval(this.tTrack);
     if (this.tInsights) clearInterval(this.tInsights);
+    if (this.tOnline) clearInterval(this.tOnline);
   }
 
   // ===== UI =====
@@ -156,10 +158,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
 
     this.toast(ok ? '✅ Copiado al portapapeles' : '⚠️ No se pudo copiar');
 
-    // ✅ aprendizaje local: SOLO si su StorageService está pensado para esto aquí.
-    // Si TipsService ya registra copied/shared, muévalo allá también para no duplicar.
     if (ok && this.currentTip?.id) this.storage.bumpTipStat(this.currentTip.id, 'copied');
-
     if (ok) await this.sendEvent('COPY_TIP');
   }
 
@@ -169,11 +168,13 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     if (this.currentTip?.id) this.storage.bumpTipStat(this.currentTip.id, 'shared');
 
     const ok = await this.shareNative(text);
+
+    // ✅ SIEMPRE registrar el evento (canal no se guarda en backend por ahora)
+    await this.sendEvent('SHARE_TIP');
+
+    // fallback a WhatsApp si no hay share nativo
     if (!ok) {
-      await this.sendEvent('SHARE_TIP', 'whatsapp');
       window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank', 'noopener');
-    } else {
-      await this.sendEvent('SHARE_TIP');
     }
   }
 
@@ -206,10 +207,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
 
   // ===== internals =====
   private pickNewTip() {
-    // ✅ Un solo origen: TipsService decide tip + historial/seen (según su diseño).
     this.currentTip = this.tipsSrv.nextTip(this.topic) as TipWithId;
-
-    // ✅ Conteo se deriva desde storage (ya actualizado por TipsService).
     this.historyCount = this.storage.getTipHistoryIds().length;
 
     if (navigator.vibrate) navigator.vibrate(18);
@@ -275,14 +273,15 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     }
   }
 
-  private async sendEvent(type: string, refOverride?: string) {
+  // ✅ refOverride eliminado: ref siempre es el ref real (direct, tiktok, etc.)
+  private async sendEvent(type: string) {
     const { event } = this.endpoints();
 
     const payload = {
       page: this.PAGE_KEY,
       type,
       topic: this.topic,
-      ref: refOverride || this.ref || 'direct',
+      ref: this.ref || 'direct',
     };
 
     try {
@@ -368,14 +367,12 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     this.healthHint = calcBalance();
   }
 
-  private tOnline?: ReturnType<typeof setInterval>;
-
   private startRealtimeSse() {
     const { stream } = this.endpoints();
 
-    // cortar lo anterior
     this.es?.close();
     this.es = undefined;
+
     if (this.tOnline) {
       clearInterval(this.tOnline);
       this.tOnline = undefined;
@@ -398,7 +395,6 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
       });
     };
 
-    // eventos
     const setOnline = (msg: any) => {
       if (msg?.online != null) this.onlineNow = Number(msg.online) || 0;
     };
@@ -432,7 +428,6 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
       this.es?.close();
       this.es = undefined;
 
-      // ✅ fallback: polling online
       const { online } = this.endpoints();
       this.tOnline = setInterval(async () => {
         try {
