@@ -4,13 +4,17 @@ import { Injectable } from '@angular/core';
 export class VisitsApiService {
   private readonly API_BASE = 'https://api.systemblacklem.com';
 
-  endpoints(pageKey: string){
+  endpoints(pageKey: string) {
     const q = encodeURIComponent(pageKey);
     return {
       track: `${this.API_BASE}/api/public/visits/track?page=${q}`,
       me: `${this.API_BASE}/api/public/visits/me?page=${q}`,
       event: `${this.API_BASE}/api/public/visits/event`,
       insights: `${this.API_BASE}/api/public/visits/insights/me?page=${q}`,
+
+      // ✅ realtime
+      stream: `${this.API_BASE}/api/public/visits/stream?page=${q}`,
+      online: `${this.API_BASE}/api/public/visits/online?page=${q}`,
     };
   }
 
