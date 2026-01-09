@@ -1,0 +1,25 @@
+/* You can add global styles to this file, and also import other style files */
+:root{
+  --bg0:#030A12; --bg1:#041c2d; --bg2:#0b4f7a;
+  --glass: rgba(255,255,255,.10);
+  --stroke: rgba(255,255,255,.18);
+  --txt: rgba(255,255,255,.92);
+  --muted: rgba(255,255,255,.66);
+  --accent: #00ffd1;
+  --danger: #ff5c7a;
+  --shadow: 0 20px 60px rgba(0,0,0,.35);
+  --r: 18px;
+  --ok: rgba(0,255,209,.16);
+  --warn: rgba(255,184,0,.16);
+}
+
+*{ box-sizing:border-box }
+html,body{ height:100% }
+
+body{
+  margin:0;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+  color: var(--txt);
+  background: radial-gradient(1200px 700px at 10% 0%, var(--bg2), var(--bg1) 45%, var(--bg0) 100%);
+  overflow-x:hidden;
+}
