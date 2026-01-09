@@ -1,3 +1,4 @@
+// app.ts
 import {
   AfterViewInit,
   Component,
@@ -62,7 +63,6 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
   // ✅ realtime
   onlineNow: number | null = null;
   private es?: EventSource;
-  private tOnline: any = null;
 
   private visitorId = '';
   private ref = 'direct';
@@ -104,30 +104,23 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
       });
     }
 
-    // ===== inicial =====
     void this.loadMe();
     void this.track();
     void this.loadInsights(true);
 
-    // ✅ realtime
+    // ✅ SSE realtime
     this.startRealtimeSse();
-    // fallback: si el SSE falla, igual puede mantener online por polling
-    this.tOnline = setInterval(() => void this.loadOnline(), 15_000);
 
-    // ===== timers existentes =====
     this.tTrack = setInterval(() => void this.track(), 30_000);
     this.tInsights = setInterval(() => void this.loadInsights(false), 45_000);
   }
 
   ngOnDestroy(): void {
     this.fx.stop();
-
     this.es?.close();
-    this.es = undefined;
 
     if (this.tTrack) clearInterval(this.tTrack);
     if (this.tInsights) clearInterval(this.tInsights);
-    if (this.tOnline) clearInterval(this.tOnline);
   }
 
   // ===== UI =====
@@ -136,7 +129,6 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     this.hint = this.tipsSrv.getHint(t);
     this.persistPrefs();
     this.newTip();
-
     void this.sendEvent('TOPIC', t);
   }
 
@@ -226,7 +218,6 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
   }
 
   private endpoints() {
-    // ✅ para SSE pasamos visitorId
     return this.api.endpoints(this.PAGE_KEY, this.visitorId);
   }
 
@@ -252,24 +243,6 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     } catch {}
   }
 
-  private async loadOnline() {
-    try {
-      const { online } = this.endpoints();
-      // Puede devolver { online: number } o number directo; soportamos ambos
-      const data = await fetch(online, { cache: 'no-store' }).then((r) => r.json()).catch(() => null);
-      if (data == null) return;
-
-      const n =
-        typeof data === 'number'
-          ? data
-          : typeof data?.online === 'number'
-          ? data.online
-          : null;
-
-      if (typeof n === 'number') this.onlineNow = n;
-    } catch {}
-  }
-
   private async sendEvent(type: string, refOverride?: string) {
     const { event } = this.endpoints();
     const payload = {
@@ -292,13 +265,13 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
 
   private async loadInsights(force: boolean) {
     const now = Date.now();
-    if (!force && this.insights?._ts && now - this.insights._ts < 15_000) return;
+    if (!force && (this.insights as any)?._ts && now - (this.insights as any)._ts < 15_000) return;
 
     try {
       const { insights } = this.endpoints();
       const ins = await this.api.apiFetch<any>(insights, this.visitorId, { method: 'GET' });
       if (ins) {
-        ins._ts = now;
+        (ins as any)._ts = now;
         this.insights = ins;
       }
       this.deriveInsightsUI();
@@ -341,47 +314,52 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     this.healthHint = calcBalance();
   }
 
-  // ✅ SSE principal
+  // ✅ SSE: escuchar eventos con nombre (porque backend usa .name("online"), etc.)
   private startRealtimeSse() {
     const { stream } = this.endpoints();
 
     this.es?.close();
     this.es = this.api.openSse(stream);
 
-    this.es.onopen = () => {
-      // opcional: marque el online al conectar
-      void this.loadOnline();
+    const safeJson = (ev: MessageEvent) => {
+      try { return JSON.parse(String(ev.data ?? '{}')); } catch { return null; }
     };
 
-    this.es.onmessage = (ev) => {
-      // Espere JSON en ev.data (lo normal en SSE)
-      // Ejemplos soportados:
-      // 1) {"online":12}
-      // 2) {"profile":{...}, "online":12, "insights":{...}}
-      // 3) {"type":"PING"} (lo ignoramos)
-      try {
-        const msg = JSON.parse(ev.data || '{}');
+    this.es.addEventListener('hello', (ev: any) => {
+      const msg = safeJson(ev);
+      if (msg?.online != null) this.onlineNow = Number(msg.online) || 0;
+    });
 
-        if (typeof msg?.online === 'number') this.onlineNow = msg.online;
+    this.es.addEventListener('online', (ev: any) => {
+      const msg = safeJson(ev);
+      if (msg?.online != null) this.onlineNow = Number(msg.online) || 0;
+    });
 
-        if (msg?.profile) {
-          this.profile = msg.profile;
-          this.computeProgress();
-        }
-
-        if (msg?.insights) {
-          msg.insights._ts = Date.now();
-          this.insights = msg.insights;
-          this.deriveInsightsUI();
-        }
-      } catch {
-        // ignore
+    this.es.addEventListener('profile', (ev: any) => {
+      const msg = safeJson(ev);
+      if (msg) {
+        this.profile = msg;
+        this.computeProgress();
       }
-    };
+    });
+
+    this.es.addEventListener('total', (ev: any) => {
+      const msg = safeJson(ev);
+      // msg = { page, total }
+      if (msg?.total != null) this.profile = { ...this.profile, total: Number(msg.total) || 0 };
+    });
+
+    this.es.addEventListener('insights', (ev: any) => {
+      const msg = safeJson(ev);
+      if (msg) {
+        (msg as any)._ts = Date.now();
+        this.insights = msg;
+        this.deriveInsightsUI();
+      }
+    });
 
     this.es.onerror = () => {
-      // EventSource suele reintentar solo, pero si el servidor corta duro,
-      // este reinicio ayuda y evita colgar conexiones zombie.
+      // reconexión simple
       this.es?.close();
       this.es = undefined;
       setTimeout(() => this.startRealtimeSse(), 1500);

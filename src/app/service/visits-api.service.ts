@@ -6,8 +6,6 @@ export class VisitsApiService {
 
   endpoints(pageKey: string, visitorId?: string) {
     const page = encodeURIComponent(pageKey);
-
-    // ✅ para SSE: EventSource no manda headers, por eso pasamos visitorId en query
     const vid = visitorId ? `&vid=${encodeURIComponent(visitorId)}` : '';
 
     return {
@@ -16,22 +14,16 @@ export class VisitsApiService {
       event: `${this.API_BASE}/api/public/visits/event`,
       insights: `${this.API_BASE}/api/public/visits/insights/me?page=${page}`,
 
-      // ✅ realtime
+      // ✅ realtime (EventSource no manda headers, por eso vid va en query)
       stream: `${this.API_BASE}/api/public/visits/stream?page=${page}${vid}`,
       online: `${this.API_BASE}/api/public/visits/online?page=${page}${vid}`,
     };
   }
 
-  async apiFetch<T>(
-    url: string,
-    visitorId: string,
-    options: RequestInit = {}
-  ): Promise<T | null> {
+  async apiFetch<T>(url: string, visitorId: string, options: RequestInit = {}): Promise<T | null> {
     const headers = new Headers(options.headers || {});
     headers.set('X-Visitor-Id', visitorId);
-    if (options.body && !headers.has('Content-Type')) {
-      headers.set('Content-Type', 'application/json');
-    }
+    if (options.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
 
     const res = await fetch(url, { cache: 'no-store', ...options, headers });
     if (res.status === 204) return null;
@@ -41,7 +33,6 @@ export class VisitsApiService {
   }
 
   openSse(url: string): EventSource {
-    // EventSource NO soporta headers personalizados
     return new EventSource(url);
   }
 }
