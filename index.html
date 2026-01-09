@@ -1,0 +1,493 @@
+<script>
+  /* =========================
+     Helpers: localStorage seguro
+     ========================= */
+  function safeGet(key){
+    try{
+      const raw = localStorage.getItem(key);
+      if (!raw) return null;
+      return JSON.parse(raw);
+    }catch{ return null; }
+  }
+  function safeSet(key, value){
+    try{ localStorage.setItem(key, JSON.stringify(value)); }catch{}
+  }
+
+  /* =========================
+     CONFIG API (contador + perfil + eventos)
+     ========================= */
+  const API_BASE = "https://api.systemblacklem.com";
+  const PAGE_KEY = "visits";
+
+  const ENDPOINT_TRACK = `${API_BASE}/api/public/visits/track?page=${encodeURIComponent(PAGE_KEY)}`;
+  const ENDPOINT_ME    = `${API_BASE}/api/public/visits/me?page=${encodeURIComponent(PAGE_KEY)}`;
+  const ENDPOINT_EVENT = `${API_BASE}/api/public/visits/event`;
+
+  /* =========================
+     VisitorId anónimo (persistente)
+     ========================= */
+  const VISITOR_KEY = "sb_visitor_id_v1";
+
+  function randomId(len = 20){
+    const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    let out = "";
+    for (let i=0;i<len;i++) out += chars[Math.floor(Math.random()*chars.length)];
+    return out;
+  }
+
+  function getVisitorId(){
+    const stored = safeGet(VISITOR_KEY);
+    if (typeof stored === "string" && stored.length >= 8) return stored;
+
+    const v = `v_${randomId(22)}`;
+    safeSet(VISITOR_KEY, v);
+    return v;
+  }
+
+  const VISITOR_ID = getVisitorId();
+
+  /* =========================
+     Fetch con header X-Visitor-Id
+     ========================= */
+  async function apiFetch(url, options = {}){
+    const headers = new Headers(options.headers || {});
+    headers.set("X-Visitor-Id", VISITOR_ID);
+
+    if (options.body && !headers.has("Content-Type")) {
+      headers.set("Content-Type", "application/json");
+    }
+
+    const res = await fetch(url, {
+      cache: "no-store",
+      ...options,
+      headers
+    });
+
+    if (res.status === 204) return null;
+    const text = await res.text();
+    return text ? JSON.parse(text) : null;
+  }
+
+  function applyProfile(data){
+    if (!data) return;
+
+    // contador global
+    document.getElementById("visitCount").textContent = String(data.total ?? "—");
+
+    // racha real del backend
+    if (typeof data.streak === "number") {
+      document.getElementById("streak").textContent = String(data.streak);
+    }
+
+    // si luego agrega badges/nivel/xp a la UI:
+    // data.xp, data.level, data.badges
+  }
+
+  async function loadMe(){
+    try{
+      const data = await apiFetch(ENDPOINT_ME, { method:"GET" });
+      applyProfile(data);
+    }catch{}
+  }
+
+  async function track(){
+    try{
+      const data = await apiFetch(ENDPOINT_TRACK, { method:"GET" });
+      applyProfile(data);
+    }catch{
+      document.getElementById("visitCount").textContent = "—";
+    }
+  }
+
+  async function sendEvent(type){
+    try{
+      const body = JSON.stringify({ page: PAGE_KEY, type });
+      const data = await apiFetch(ENDPOINT_EVENT, { method:"POST", body });
+      applyProfile(data);
+    }catch{}
+  }
+
+  /* =========================
+     Preferencias + estado local
+     ========================= */
+  const PREF_KEY = "sb_visits_prefs_v1";
+  const HISTORY_KEY = "sb_tip_history_v1";
+
+  function dayKey(d){
+    const y = d.getFullYear();
+    const m = String(d.getMonth()+1).padStart(2,"0");
+    const da = String(d.getDate()).padStart(2,"0");
+    return `${y}-${m}-${da}`;
+  }
+
+  const prefs = safeGet(PREF_KEY) ?? {
+    topic: "seguridad",
+    musicState: "AUTO", // AUTO | ON | OFF
+    lastDay: dayKey(new Date())
+  };
+
+  /* =========================
+     Contenido (tips)
+     ========================= */
+  const TIPS = [
+    { topic:"seguridad", title:"Evite phishing en 20 segundos", steps:[
+      "Revise el dominio completo (no solo el nombre del remitente).",
+      "No abra enlaces acortados si no está 100% seguro del origen.",
+      "Active 2FA en correo y redes (ideal: app autenticadora)."
+    ]},
+    { topic:"seguridad", title:"Proteja su WhatsApp en 2 minutos", steps:[
+      "Active “Verificación en dos pasos” (PIN) en WhatsApp.",
+      "Bloquee su SIM con PIN desde el teléfono.",
+      "Nunca comparta códigos recibidos por SMS, aunque “parezca soporte”."
+    ]},
+    { topic:"seguridad", title:"Contraseñas: la regla 12–3", steps:[
+      "Use mínimo 12 caracteres (frase fácil de recordar).",
+      "Incluya 3 tipos: letras, números y símbolo.",
+      "No repita contraseña: use un gestor si es posible."
+    ]},
+
+    { topic:"estudio", title:"Método 25–5 (Pomodoro) sin estrés", steps:[
+      "25 min enfoque: solo una tarea.",
+      "5 min descanso: agua, respiración, estiramiento.",
+      "Cada 4 rondas, descanso largo de 15 min."
+    ]},
+    { topic:"estudio", title:"Aprenda más rápido con “Active Recall”", steps:[
+      "Después de leer, cierre el material y explique con sus palabras.",
+      "Haga 5 preguntas y respóndalas sin mirar.",
+      "Revise errores y repita al día siguiente."
+    ]},
+
+    { topic:"productividad", title:"Plan de 3 prioridades (10 min)", steps:[
+      "Escriba 3 resultados concretos del día (no 10 tareas).",
+      "Bloquee 1 hora para la prioridad #1 sin interrupciones.",
+      "Al final del día: ajuste y deje listo el primer paso de mañana."
+    ]},
+    { topic:"productividad", title:"Regla de los 2 minutos", steps:[
+      "Si algo toma menos de 2 minutos, hágalo de inmediato.",
+      "Si no, anótelo y prográmelo (no lo deje en la cabeza).",
+      "Evite micro-tareas dispersas que rompen el enfoque."
+    ]},
+
+    { topic:"bienestar", title:"Reduzca ansiedad por pantalla (3 pasos)", steps:[
+      "Baje brillo y active “modo noche” después de las 6pm.",
+      "Quite notificaciones no esenciales por 24 horas.",
+      "Antes de dormir: 10 min sin pantalla (música suave o lectura)."
+    ]},
+    { topic:"bienestar", title:"Descanso ocular 20–20–20", steps:[
+      "Cada 20 minutos, mire a 20 pies (6 metros) por 20 segundos.",
+      "Parpadee conscientemente para evitar resequedad.",
+      "Si duele la cabeza: pause 5 minutos y respire."
+    ]}
+  ];
+
+  function pick(arr){ return arr[Math.floor(Math.random() * arr.length)]; }
+
+  /* =========================
+     Render tip + historial
+     ========================= */
+  const elTitle = document.getElementById("tipTitle");
+  const elSteps = document.getElementById("tipSteps");
+  const elToast = document.getElementById("toast");
+
+  let currentTip = null;
+
+  function toast(msg){
+    elToast.textContent = msg;
+    elToast.classList.add("show");
+    window.clearTimeout(toast._t);
+    toast._t = window.setTimeout(()=> elToast.classList.remove("show"), 1400);
+  }
+
+  function historyGet(){
+    return safeGet(HISTORY_KEY) ?? [];
+  }
+  function historyPush(text){
+    const h = historyGet();
+    const next = [text, ...h.filter(x => x !== text)].slice(0, 7);
+    safeSet(HISTORY_KEY, next);
+    document.getElementById("historyCount").textContent = String(next.length);
+  }
+
+  function tipToText(t){
+    return [
+      `✨ ${t.title}`,
+      ...t.steps.map((s,i)=>`${i+1}) ${s}`),
+      `— SystemBlacklem · Alberto Lem`
+    ].join("\n");
+  }
+
+  function escapeHtml(s){
+    return String(s)
+      .replaceAll("&","&amp;")
+      .replaceAll("<","&lt;")
+      .replaceAll(">","&gt;")
+      .replaceAll('"',"&quot;")
+      .replaceAll("'","&#039;");
+  }
+
+  function renderTip(t){
+    currentTip = t;
+    elTitle.textContent = t.title;
+    elSteps.innerHTML = t.steps.map((s,i)=>(
+      `<li><span class="n">${i+1}</span><span>${escapeHtml(s)}</span></li>`
+    )).join("");
+    historyPush(tipToText(t));
+  }
+
+  function newTip(){
+    const topic = prefs.topic || "seguridad";
+    const pool = TIPS.filter(t => t.topic === topic);
+    renderTip(pick(pool.length ? pool : TIPS));
+    if (navigator.vibrate) navigator.vibrate(18);
+  }
+
+  /* =========================
+     Chips (tema)
+     ========================= */
+  const chips = {
+    seguridad: document.getElementById("chipSeg"),
+    estudio: document.getElementById("chipEst"),
+    productividad: document.getElementById("chipProd"),
+    bienestar: document.getElementById("chipBien"),
+  };
+
+  function setTopic(topic){
+    prefs.topic = topic;
+    safeSet(PREF_KEY, prefs);
+
+    for (const [k, el] of Object.entries(chips)){
+      el.setAttribute("aria-pressed", String(k === topic));
+    }
+
+    const hint = document.getElementById("hint");
+    hint.textContent =
+      topic === "seguridad" ? "Tip corto de ciberseguridad. Ideal para compartir." :
+      topic === "estudio" ? "Tip de estudio aplicable hoy. Rotación rápida." :
+      topic === "productividad" ? "Acción simple para mejorar enfoque y resultados." :
+      "Higiene digital y descanso mental en pocos pasos.";
+
+    newTip();
+  }
+
+  chips.seguridad.addEventListener("click", ()=> setTopic("seguridad"));
+  chips.estudio.addEventListener("click", ()=> setTopic("estudio"));
+  chips.productividad.addEventListener("click", ()=> setTopic("productividad"));
+  chips.bienestar.addEventListener("click", ()=> setTopic("bienestar"));
+
+  /* =========================
+     Copiar / Compartir
+     ========================= */
+  async function copyText(text){
+    try{
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    }catch{}
+    try{
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.focus(); ta.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      return ok;
+    }catch{ return false; }
+  }
+
+  function shareWhatsApp(text){
+    window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank", "noopener");
+  }
+
+  async function shareNative(text){
+    if (navigator.share){
+      try{
+        await navigator.share({ text });
+        return true;
+      }catch{}
+    }
+    return false;
+  }
+
+  document.getElementById("btnRefresh").addEventListener("click", async () => {
+    newTip();
+    await sendEvent("NEW_TIP");
+  });
+
+  document.getElementById("btnCopy").addEventListener("click", async () => {
+    const text = currentTip ? tipToText(currentTip) : "";
+    const ok = await copyText(text);
+    toast(ok ? "✅ Copiado al portapapeles" : "⚠️ No se pudo copiar");
+    if (ok) await sendEvent("COPY_TIP");
+  });
+
+  document.getElementById("btnShare").addEventListener("click", async () => {
+    const text = currentTip ? tipToText(currentTip) : "";
+    const ok = await shareNative(text);
+    if (!ok) shareWhatsApp(text);
+    await sendEvent("SHARE_TIP");
+  });
+
+  /* =========================
+     FX Canvas (igual al suyo)
+     ========================= */
+  const canvas = document.getElementById("fxCanvas");
+  const ctx = canvas.getContext("2d", { alpha:true });
+  let dots = [];
+  let raf = null;
+
+  function getDpr(){ return Math.min(2, window.devicePixelRatio || 1); }
+
+  function resize(){
+    const dpr = getDpr();
+    canvas.width  = Math.floor(window.innerWidth  * dpr);
+    canvas.height = Math.floor(window.innerHeight * dpr);
+    ctx.setTransform(1,0,0,1,0,0);
+    ctx.scale(dpr, dpr);
+  }
+
+  function density(){
+    const w = window.innerWidth;
+    const base = Math.floor(w / 10);
+    return Math.max(70, Math.min(160, base));
+  }
+
+  function initDots(){
+    const n = density();
+    dots = Array.from({ length:n }, () => ({
+      x: Math.random() * window.innerWidth,
+      y: Math.random() * window.innerHeight,
+      r: 0.7 + Math.random() * 1.9,
+      vy: 0.45 + Math.random() * 1.55,
+      vx: -0.18 + Math.random() * 0.36,
+      wob: Math.random() * Math.PI * 2,
+      woSpeed: 0.004 + Math.random() * 0.010,
+      a: 0.18 + Math.random() * 0.55
+    }));
+  }
+
+  function draw(){
+    ctx.clearRect(0,0, window.innerWidth, window.innerHeight);
+    for (const d of dots){
+      d.wob += d.woSpeed;
+      d.x += d.vx + Math.sin(d.wob) * 0.28;
+      d.y += d.vy;
+
+      if (d.y > window.innerHeight + 10) { d.y = -10; d.x = Math.random() * window.innerWidth; }
+      if (d.x < -10) d.x = window.innerWidth + 10;
+      if (d.x > window.innerWidth + 10) d.x = -10;
+
+      ctx.beginPath();
+      ctx.fillStyle = `rgba(255,255,255,${d.a})`;
+      ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    raf = requestAnimationFrame(draw);
+  }
+
+  window.addEventListener("resize", () => { resize(); initDots(); });
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden && raf){ cancelAnimationFrame(raf); raf=null; }
+    if (!document.hidden && !raf){ draw(); }
+  });
+
+  resize();
+  initDots();
+  draw();
+
+  /* =========================
+     Música (igual al suyo)
+     ========================= */
+  const audio = document.getElementById("bgMusic");
+  const btnMusic = document.getElementById("btnMusic");
+  const audioState = document.getElementById("audioState");
+  const banner = document.getElementById("audioBanner");
+
+  let musicState = prefs.musicState || "AUTO"; // AUTO | ON | OFF
+
+  function setBanner(show){
+    banner.style.display = show ? "flex" : "none";
+  }
+
+  function updateAudioUI(){
+    if (musicState === "ON") {
+      btnMusic.textContent = "🔊 Música: ON";
+      audioState.textContent = "🔊 Música: ON";
+    } else if (musicState === "OFF") {
+      btnMusic.textContent = "🔇 Música: OFF";
+      audioState.textContent = "🔇 Música: OFF";
+    } else {
+      btnMusic.textContent = "🔊 Música: AUTO";
+      audioState.textContent = "🔊 Música: AUTO";
+    }
+    prefs.musicState = musicState;
+    safeSet(PREF_KEY, prefs);
+  }
+
+  async function startMusic(){
+    audio.volume = 0.65;
+    audio.muted = false;
+    try{
+      await audio.play();
+      musicState = "ON";
+      setBanner(false);
+    }catch{
+      musicState = "AUTO";
+      setBanner(true);
+    }
+    updateAudioUI();
+  }
+
+  function stopMusic(){
+    try{ audio.pause(); audio.currentTime = 0; }catch{}
+    musicState = "OFF";
+    setBanner(false);
+    updateAudioUI();
+  }
+
+  async function tryAutoplay(){
+    if (musicState === "OFF") { updateAudioUI(); return; }
+    await startMusic();
+  }
+
+  btnMusic.addEventListener("click", () => {
+    if (musicState === "ON") stopMusic();
+    else startMusic();
+  });
+
+  document.getElementById("btnEnableAudio").addEventListener("click", startMusic);
+  document.getElementById("btnDismissAudio").addEventListener("click", stopMusic);
+
+  function userGestureKick(){
+    if (musicState === "AUTO") startMusic();
+    window.removeEventListener("pointerdown", userGestureKick);
+    window.removeEventListener("keydown", userGestureKick);
+  }
+  window.addEventListener("pointerdown", userGestureKick, { passive:true });
+  window.addEventListener("keydown", userGestureKick);
+
+  updateAudioUI();
+  tryAutoplay();
+
+  /* =========================
+     INIT
+     ========================= */
+  (async function init(){
+    document.getElementById("historyCount").textContent = String((historyGet() || []).length);
+
+    // tema inicial por prefs
+    setTopic(prefs.topic || "seguridad");
+
+    // 1) perfil sin sumar visita
+    await loadMe();
+
+    // 2) registrar visita real
+    await track();
+
+    // 3) refrescar contador/perfil cada 30s
+    setInterval(track, 30000);
+  })();
+</script>
