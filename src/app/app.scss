@@ -1,6 +1,11 @@
-/* tips.component.scss (o su SCSS global) */
+/* tips.component.scss
+   ✅ Incluye: Online con pulso real + Sistema altamente visible
+   ✅ Mantiene su estética (glass/neon) y NO duplica estados
+*/
 
-/* Canvas FX */
+/* =========================
+   Canvas FX
+========================= */
 #fxCanvas{
   position: fixed;
   inset: 0;
@@ -8,7 +13,9 @@
   pointer-events: none;
 }
 
-/* Layout */
+/* =========================
+   Layout
+========================= */
 .wrap{
   position: relative;
   z-index: 2;
@@ -18,32 +25,36 @@
   padding: 24px 14px;
 }
 
-/* Card base */
+/* =========================
+   Card base
+========================= */
 .card{
   width: min(1040px, 96vw);
   border-radius: var(--r, 18px);
   background: var(--glass, rgba(255,255,255,.10));
   border: 1px solid var(--stroke, rgba(255,255,255,.18));
   backdrop-filter: blur(14px);
-  box-shadow: var(--shadow, 0 20px 60px rgba(0,0,0,.35));
+  box-shadow: var(--shadow, 0 22px 70px rgba(0,0,0,.40));
   overflow: hidden;
   position: relative;
 }
 
-/* Aura / glow */
 .card::before{
   content:"";
   position:absolute;
   inset:-2px;
   pointer-events:none;
   background:
-    radial-gradient(600px 220px at 20% 0%, rgba(0,255,209,.18), transparent 62%),
-    radial-gradient(520px 260px at 85% 10%, rgba(120,92,255,.18), transparent 60%);
+    radial-gradient(650px 240px at 16% 0%, rgba(0,255,209,.18), transparent 62%),
+    radial-gradient(580px 280px at 88% 8%, rgba(120,92,255,.18), transparent 60%),
+    radial-gradient(560px 320px at 50% 120%, rgba(255,255,255,.08), transparent 64%);
   filter: blur(10px);
   opacity: .55;
 }
 
-/* Header */
+/* =========================
+   Header (sticky)
+========================= */
 .top{
   padding: 18px 18px 12px;
   display: flex;
@@ -51,10 +62,11 @@
   justify-content: space-between;
   gap: 14px;
   border-bottom: 1px solid rgba(255,255,255,.12);
+
   position: sticky;
   top: 0;
   z-index: 3;
-  background: linear-gradient(180deg, rgba(0,0,0,.22), rgba(0,0,0,.08));
+  background: linear-gradient(180deg, rgba(0,0,0,.24), rgba(0,0,0,.10));
   backdrop-filter: blur(14px);
 }
 
@@ -81,7 +93,21 @@
     font-size: 11px;
     color: rgba(255,255,255,.62);
     letter-spacing: .15px;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
   }
+}
+
+.modeTag{
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: rgba(255,255,255,.06);
+  border: 1px solid rgba(255,255,255,.12);
+  color: rgba(255,255,255,.88);
+  font-weight: 900;
+  letter-spacing: .2px;
 }
 
 .stats{
@@ -94,6 +120,10 @@
   justify-content: flex-end;
 }
 
+/* =========================
+   KPI Pills + Online Pulse
+   ✅ "Online" tendrá pulso REAL si la pill tiene class.isOn
+========================= */
 .pill{
   padding: 8px 10px;
   border-radius: 999px;
@@ -104,112 +134,241 @@
   align-items: center;
   white-space: nowrap;
   position: relative;
+  transition: transform .12s ease, background .12s ease, border-color .12s ease;
 
-  .ico{ opacity:.9; }
+  b{ color: var(--txt, rgba(255,255,255,.95)); }
 
-  b{
-    color: var(--txt, rgba(255,255,255,.95));
+  &:hover{
+    transform: translateY(-1px);
+    background: rgba(255,255,255,.08);
   }
 }
 
-/* Online pill: eye + pulse */
-.pill-online{
-  padding-right: 14px;
-
-  &.isOn{
-    border-color: rgba(0,255,209,.35);
-    background: rgba(0,255,209,.10);
-    box-shadow: 0 0 0 3px rgba(0,255,209,.08) inset;
-  }
-}
-
-.ico-eye{
-  width: 18px;
-  height: 18px;
-  display: inline-block;
-  border-radius: 999px;
-  position: relative;
-  background: rgba(255,255,255,.06);
-  border: 1px solid rgba(255,255,255,.16);
-  box-shadow: 0 0 0 3px rgba(0,255,209,.06) inset;
-
-  &::before{
-    content:"";
-    position: absolute;
-    inset: 4px 3px;
-    border-radius: 999px;
-    border: 1px solid rgba(255,255,255,.28);
-    transform: rotate(-10deg);
-  }
-
-  &::after{
-    content:"";
-    position: absolute;
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    left: 50%;
-    top: 50%;
-    transform: translate(-50%,-50%);
-    background: rgba(0,255,209,.92);
-    box-shadow: 0 0 10px rgba(0,255,209,.45);
-    animation: pupil 2.2s ease-in-out infinite;
-  }
-}
-
-@keyframes pupil{
-  0%,100%{ transform: translate(-50%,-50%) }
-  50%{ transform: translate(-45%,-55%) }
-}
-
+/* dot base */
 .pulseDot{
   width: 8px;
   height: 8px;
-  border-radius: 50%;
-  background: rgba(0,255,209,.9);
-  box-shadow: 0 0 0 0 rgba(0,255,209,.45);
+  border-radius: 999px;
+  background: rgba(0,255,209,.92);
+  box-shadow: 0 0 12px rgba(0,255,209,.28);
   margin-left: 2px;
+  opacity: .25; /* tenue por defecto */
+}
 
-  .pill-online.isOn &{
-    animation: pulse 1.4s ease-out infinite;
+/* Resalta online (ESTÁTICO) si existe el dot */
+.pill:has(.pulseDot){
+  border-color: rgba(0,255,209,.22);
+}
+
+/* ✅ Online real: pulso SOLO del punto */
+.pill.isOn .pulseDot{
+  opacity: 1;
+  animation: onlinePulse 1.35s ease-out infinite;
+}
+
+@keyframes onlinePulse{
+  0%{ box-shadow: 0 0 0 0 rgba(0,255,209,.35); transform: scale(1); }
+  70%{ box-shadow: 0 0 0 12px rgba(0,255,209,0); transform: scale(1.08); }
+  100%{ box-shadow: 0 0 0 0 rgba(0,255,209,0); transform: scale(1); }
+}
+
+/* ✅ IMPORTANTE:
+   Quitar pulso del contorno: el pill NO se anima, solo cambia borde fijo si está on */
+.pill.isOn{
+  animation: none !important;
+  box-shadow: none !important;
+  border-color: rgba(0,255,209,.22); /* o .30 si lo quiere un poco más marcado */
+}
+
+/* =========================
+   SYSTEM BAR (más visible)
+   ✅ Bloque de autoridad visual
+========================= */
+.sysBar{
+  padding: 10px 18px;
+  border-bottom: 1px solid rgba(255,255,255,.12);
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+
+  /* ✅ Más visible: gradiente suave + marco */
+  background: linear-gradient(
+    90deg,
+    rgba(120,92,255,.16),
+    rgba(0,255,209,.10)
+  );
+  box-shadow:
+    inset 0 -1px 0 rgba(255,255,255,.08),
+    0 10px 24px rgba(0,0,0,.10);
+  color: rgba(255,255,255,.90);
+}
+
+/* ✅ variantes semánticas */
+.sysBar.ok{
+  background: linear-gradient(90deg, rgba(0,255,209,.20), rgba(0,255,209,.08));
+  border-bottom-color: rgba(0,255,209,.20);
+}
+
+.sysBar.warn{
+  background: linear-gradient(90deg, rgba(255,92,122,.20), rgba(255,92,122,.08));
+  border-bottom-color: rgba(255,92,122,.22);
+}
+
+.sysLeft{
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 260px;
+}
+
+.sysLeft .dot{
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: rgba(0,255,209,.82);
+
+  /* halo base */
+  box-shadow: 0 0 0 6px rgba(0,255,209,.12);
+
+  /* ✅ Pulso “Sistema vivo” */
+  animation: systemPulse 2.2s ease-in-out infinite;
+}
+
+@keyframes systemPulse{
+  0%,100%{
+    box-shadow: 0 0 0 6px rgba(0,255,209,.12);
+    transform: scale(1);
+  }
+  50%{
+    box-shadow: 0 0 0 10px rgba(0,255,209,.20);
+    transform: scale(1.08);
   }
 }
 
-@keyframes pulse{
-  0%{ box-shadow: 0 0 0 0 rgba(0,255,209,.45) }
-  70%{ box-shadow: 0 0 0 10px rgba(0,255,209,0) }
-  100%{ box-shadow: 0 0 0 0 rgba(0,255,209,0) }
+.sysLeft b{
+  color: rgba(255,255,255,.95);
+  margin-right: 2px;
 }
 
-/* Main grid */
-main{
+.sysText{
+  color: rgba(255,255,255,.92);
+}
+
+/* Derecha: tags + botón */
+.sysRight{
+  display: inline-flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+
+/* =========================
+   miniTag - SSE / Modo
+========================= */
+.miniTag{
+  padding: 7px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,.12);
+  background: rgba(255,255,255,.06);
+  font-weight: 900;
+  font-size: 12px;
+  color: rgba(255,255,255,.86);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+
+  b{ color: rgba(255,255,255,.95); }
+}
+
+.miniTag.ok{
+  border-color: rgba(0,255,209,.30);
+  background: rgba(0,255,209,.10);
+}
+
+.miniTag.warn{
+  border-color: rgba(255,92,122,.32);
+  background: rgba(255,92,122,.10);
+  animation: reconnectGlow 1.2s ease-in-out infinite;
+}
+
+@keyframes reconnectGlow{
+  0%,100%{ box-shadow: 0 0 0 0 rgba(255,92,122,.12); }
+  50%{ box-shadow: 0 0 0 6px rgba(255,92,122,.06); }
+}
+
+/* Botón mini */
+.miniBtn{
+  border: 1px solid rgba(255,255,255,.16);
+  background: rgba(255,255,255,.10);
+  color: rgba(255,255,255,.92);
+  padding: 8px 10px;
+  border-radius: 12px;
+  cursor: pointer;
+  font-weight: 900;
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  transition: transform .12s ease, background .12s ease, box-shadow .12s ease;
+
+  &:hover{
+    transform: translateY(-1px);
+    background: rgba(255,255,255,.14);
+    box-shadow: 0 12px 30px rgba(0,0,0,.18);
+  }
+  &:active{ transform: translateY(0) scale(.99); }
+}
+
+/* =========================
+   Main grid
+========================= */
+.grid{
   padding: 16px 18px 18px;
   display: grid;
   grid-template-columns: 1.15fr .85fr;
   gap: 14px;
+  align-items: start;
 }
 
 @media (max-width: 920px){
-  main{ grid-template-columns: 1fr; }
+  .grid{ grid-template-columns: 1fr; }
   .brand{ min-width: unset; }
 }
 
-/* Panels */
+/* =========================
+   Panels
+========================= */
 .panel{
   border-radius: 16px;
   border: 1px solid rgba(255,255,255,.12);
   background: rgba(0,0,0,.14);
   padding: 14px;
-  position: relative;
 }
 
-.side h3{
-  margin: 0 0 10px;
-  font-size: 14px;
-  color: rgba(255,255,255,.92);
+/* Izquierda */
+.panel.content{
+  display: flex;
+  flex-direction: column;
+  min-height: clamp(420px, 60vh, 560px);
 }
 
-/* Chips */
+/* Derecha sticky (desktop) */
+.panel.side{
+  position: sticky;
+  top: 92px;
+  height: fit-content;
+}
+
+@media (max-width: 920px){
+  .panel.side{ position: static; top: auto; }
+}
+
+/* =========================
+   Chips
+========================= */
 .chips{
   display: flex;
   gap: 8px;
@@ -220,11 +379,11 @@ main{
 .chip{
   border: 1px solid rgba(255,255,255,.16);
   background: rgba(255,255,255,.06);
-  color: var(--txt, rgba(255,255,255,.95));
+  color: rgba(255,255,255,.95);
   padding: 9px 12px;
   border-radius: 999px;
   cursor: pointer;
-  font-weight: 800;
+  font-weight: 900;
   font-size: 12px;
   user-select: none;
   display: inline-flex;
@@ -232,28 +391,29 @@ main{
   align-items: center;
   transition: transform .12s ease, background .12s ease, border-color .12s ease, box-shadow .12s ease;
 
-  .chipIco{ opacity:.95; }
-
   &:hover{
     transform: translateY(-1px);
     background: rgba(255,255,255,.10);
   }
 
+  &:active{
+    transform: translateY(0) scale(.99);
+  }
+
+  &.active,
   &[aria-pressed="true"]{
     background: rgba(0,255,209,.14);
     border-color: rgba(0,255,209,.35);
     box-shadow: 0 0 0 3px rgba(0,255,209,.10) inset, 0 10px 30px rgba(0,255,209,.08);
   }
-
-  &:active{
-    transform: translateY(0px) scale(.99);
-  }
 }
 
-/* Hint */
+/* =========================
+   Hint
+========================= */
 .hint{
   margin: 6px 0 12px;
-  color: var(--muted, rgba(255,255,255,.72));
+  color: rgba(255,255,255,.72);
   font-size: 13px;
   line-height: 1.35;
   display: flex;
@@ -275,12 +435,14 @@ main{
   50%{ box-shadow: 0 0 0 10px rgba(120,92,255,.02) }
 }
 
-/* Tip title and steps */
+/* =========================
+   Tip title + steps
+========================= */
 .tipTitle{
   margin: 0 0 10px;
   font-size: 18px;
   letter-spacing: .2px;
-  color: var(--txt, rgba(255,255,255,.95));
+  color: rgba(255,255,255,.95);
   animation: fadeUp .35s ease both;
 }
 
@@ -323,7 +485,31 @@ main{
   to{ opacity: 1; transform: translateY(0) }
 }
 
-/* Actions */
+/* =========================
+   Empty state
+========================= */
+.empty{
+  padding: 12px 12px;
+  border-radius: 14px;
+  background: rgba(255,255,255,.06);
+  border: 1px dashed rgba(255,255,255,.18);
+  color: rgba(255,255,255,.78);
+  display: flex;
+  gap: 10px;
+  align-items: center;
+
+  .emptyDot{
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: rgba(255,214,120,.90);
+    box-shadow: 0 0 0 6px rgba(255,214,120,.10);
+  }
+}
+
+/* =========================
+   Actions buttons
+========================= */
 .actions{
   display: flex;
   gap: 10px;
@@ -331,11 +517,10 @@ main{
   margin-top: 14px;
 }
 
-/* Buttons + ripple */
 .btn{
   border: 1px solid rgba(255,255,255,.16);
   background: rgba(255,255,255,.08);
-  color: var(--txt, rgba(255,255,255,.95));
+  color: rgba(255,255,255,.95);
   padding: 10px 12px;
   border-radius: 12px;
   cursor: pointer;
@@ -354,81 +539,91 @@ main{
     box-shadow: 0 10px 26px rgba(0,0,0,.18);
   }
 
-  &:active{
-    transform: translateY(0px) scale(.99);
-  }
-
-  &::after{
-    content:"";
-    position:absolute;
-    inset:auto;
-    width: 14px; height: 14px;
-    left: 50%; top: 50%;
-    transform: translate(-50%,-50%) scale(0);
-    border-radius: 999px;
-    background: rgba(255,255,255,.22);
-    opacity: 0;
-    transition: transform .45s ease, opacity .45s ease;
-  }
-
-  &:active::after{
-    transform: translate(-50%,-50%) scale(18);
-    opacity: .45;
-    transition: none;
-  }
+  &:active{ transform: translateY(0) scale(.99); }
 
   &.primary{
     background: rgba(0,255,209,.16);
     border-color: rgba(0,255,209,.35);
-
-    &:hover{
-      box-shadow: 0 12px 30px rgba(0,255,209,.10);
-    }
   }
 
-  &.ghost{
-    background: rgba(0,0,0,.18);
-  }
+  &.ghost{ background: rgba(0,0,0,.18); }
 }
 
-/* Side mini cards */
-.mini{
+.btn[disabled],
+.btn[aria-disabled="true"]{
+  opacity: .55;
+  cursor: not-allowed;
+  transform: none !important;
+  box-shadow: none !important;
+}
+
+.limits{
+  display: inline-block;
+  margin-top: 10px;
+  color: rgba(255,255,255,.72);
+}
+
+/* =========================
+   Content bottom
+========================= */
+.contentBottom{
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255,255,255,.10);
+}
+
+.bottomGrid{
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 1fr 1fr;
+}
+
+@media (max-width: 920px){
+  .bottomGrid{ grid-template-columns: 1fr; }
+}
+
+.bottomCard{
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(255,255,255,.06);
+  border: 1px solid rgba(255,255,255,.10);
+}
+
+.bottomTitle{
+  font-size: 12px;
+  color: rgba(255,255,255,.72);
+  margin: 0 0 6px;
+}
+
+.bottomRow{
+  display:flex;
+  justify-content: space-between;
+  align-items:center;
+  gap: 10px;
+  color: rgba(255,255,255,.88);
+  font-size: 13px;
+
+  &.muted{ color: rgba(255,255,255,.72); }
+}
+
+/* =========================
+   Side blocks
+========================= */
+.sideBlock{
   display: flex;
   flex-direction: column;
   gap: 10px;
-  color: var(--muted, rgba(255,255,255,.70));
-  font-size: 13px;
-  line-height: 1.4;
-
-  .row{
-    display: flex;
-    justify-content: space-between;
-    gap: 10px;
-    padding: 10px 12px;
-    border-radius: 12px;
-    background: rgba(255,255,255,.06);
-    border: 1px solid rgba(255,255,255,.10);
-    align-items: center;
-    transition: transform .12s ease, background .12s ease;
-
-    &:hover{
-      transform: translateY(-1px);
-      background: rgba(255,255,255,.08);
-    }
-
-    b{
-      color: var(--txt, rgba(255,255,255,.95));
-    }
-  }
 }
 
-.sep{
-  height: 1px;
-  background: rgba(255,255,255,.10);
-  margin: 12px 0;
+.sideBlock h3{
+  margin: 0;
+  font-size: 14px;
+  color: rgba(255,255,255,.92);
 }
 
-/* Meter */
+/* =========================
+   Meter
+========================= */
 .meter{
   background: rgba(255,255,255,.06);
   border: 1px solid rgba(255,255,255,.10);
@@ -441,11 +636,11 @@ main{
   justify-content: space-between;
   gap: 10px;
   font-size: 12px;
-  color: var(--muted, rgba(255,255,255,.70));
+  color: rgba(255,255,255,.70);
   margin-bottom: 8px;
   align-items: center;
 
-  b{ color: var(--txt, rgba(255,255,255,.95)); }
+  b{ color: rgba(255,255,255,.95); }
 }
 
 .bar{
@@ -471,11 +666,13 @@ main{
   gap: 10px;
   margin-top: 8px;
   font-size: 12px;
-  color: var(--muted, rgba(255,255,255,.70));
+  color: rgba(255,255,255,.70);
   flex-wrap: wrap;
 }
 
-/* Tags */
+/* =========================
+   Tags + lists
+========================= */
 .tagRow{
   display: flex;
   flex-wrap: wrap;
@@ -495,15 +692,8 @@ main{
   gap: 8px;
   align-items: center;
 
-  small{
-    font-weight: 900;
-    color: var(--txt, rgba(255,255,255,.95));
-  }
-
-  .tagSub{
-    opacity: .7;
-    font-weight: 800;
-  }
+  small{ font-weight: 900; color: rgba(255,255,255,.95); }
+  .tagSub{ opacity: .7; font-weight: 800; }
 
   &.ok{
     background: rgba(0,255,209,.12);
@@ -511,7 +701,6 @@ main{
   }
 }
 
-/* Lists */
 .list{
   margin: 10px 0 0;
   padding: 0;
@@ -531,18 +720,41 @@ main{
     align-items: center;
     font-size: 13px;
     color: rgba(255,255,255,.86);
-    transition: transform .12s ease, background .12s ease;
 
-    &:hover{
-      transform: translateY(-1px);
-      background: rgba(255,255,255,.08);
-    }
-
-    b{ color: var(--txt, rgba(255,255,255,.95)); }
+    b{ color: rgba(255,255,255,.95); }
   }
 }
 
-/* Audio banner */
+.details{
+  margin-top: 10px;
+
+  summary{
+    cursor: pointer;
+    user-select: none;
+    padding: 10px 12px;
+    border-radius: 12px;
+    background: rgba(255,255,255,.04);
+    border: 1px solid rgba(255,255,255,.10);
+    color: rgba(255,255,255,.88);
+    font-weight: 900;
+  }
+
+  summary::-webkit-details-marker{ display:none; }
+
+  &[open] summary{
+    background: rgba(255,255,255,.06);
+  }
+}
+
+.sep{
+  height: 1px;
+  background: rgba(255,255,255,.10);
+  margin: 12px 0;
+}
+
+/* =========================
+   Audio banner + toast
+========================= */
 .audioBanner{
   margin-top: 10px;
   gap: 10px;
@@ -563,7 +775,6 @@ main{
   }
 }
 
-/* Toast */
 .toast{
   position: fixed;
   left: 50%;
@@ -575,7 +786,7 @@ main{
   border-radius: 12px;
   background: rgba(0,0,0,.55);
   border: 1px solid rgba(255,255,255,.16);
-  color: var(--txt, rgba(255,255,255,.95));
+  color: rgba(255,255,255,.95);
   box-shadow: var(--shadow, 0 20px 60px rgba(0,0,0,.35));
   transition: opacity .18s ease, transform .18s ease;
   pointer-events: none;

@@ -1,16 +1,20 @@
 // src/app/service/storage.service.ts
 import { Injectable } from '@angular/core';
-import { Topic, TipStatsMap, TipStat } from '../models/models';
+import type { Topic, TipStatsMap, TipStat } from '../models/models';
 import { randomId } from '../utils/utils';
+import type { MemoryEvent, MindState } from '../core/mind.types';
 
 export type Prefs = { topic?: Topic; musicState?: 'AUTO' | 'ON' | 'OFF' };
 
 @Injectable({ providedIn: 'root' })
 export class StorageService {
   readonly PREF_KEY = 'sb_visits_prefs_v1';
-  readonly HISTORY_KEY = 'sb_tip_history_v2';   // ✅ cambie versión
+  readonly HISTORY_KEY = 'sb_tip_history_v2';   // ✅ versión actual
   readonly VISITOR_KEY = 'sb_visitor_id_v1';
-  readonly TIP_STATS_KEY = 'sb_tip_stats_v1';   // ✅ nuevo
+  readonly TIP_STATS_KEY = 'sb_tip_stats_v1';
+
+  readonly MIND_STATE_KEY = 'sb_mind_state_v1';
+  readonly MIND_EVENTS_KEY = 'sb_mind_events_v1';
 
   safeGet<T>(key: string): T | null {
     try {
@@ -63,8 +67,29 @@ export class StorageService {
   getVisitorId(): string {
     const stored = this.safeGet<string>(this.VISITOR_KEY);
     if (typeof stored === 'string' && stored.length >= 8) return stored;
+
     const v = `v_${randomId(22)}`;
     this.safeSet(this.VISITOR_KEY, v);
     return v;
+  }
+
+  // ✅ Mind state + eventos
+  getMindState(): MindState | null {
+    return this.safeGet<MindState>(this.MIND_STATE_KEY);
+  }
+
+  setMindState(s: MindState): void {
+    this.safeSet(this.MIND_STATE_KEY, s);
+  }
+
+  getMindEvents(): MemoryEvent[] {
+    return this.safeGet<MemoryEvent[]>(this.MIND_EVENTS_KEY) ?? [];
+  }
+
+  pushMindEvent(ev: MemoryEvent, max = 80): MemoryEvent[] {
+    const all = this.getMindEvents();
+    const next = [ev, ...all].slice(0, max);
+    this.safeSet(this.MIND_EVENTS_KEY, next);
+    return next;
   }
 }

@@ -1,191 +1,253 @@
-<!-- tips.component.html (o su template) -->
-<canvas #fxCanvas id="fxCanvas"></canvas>
+<!-- tips.component.html
+     ✅ Online con pulso: agrega class.isOn a la pill Online cuando onlineNow > 0
+     ✅ Sistema visible: sysBar con clase ok/warn según sseAlive (o su lógica)
+-->
+
+<!-- ================= FX BACKGROUND ================= -->
+<canvas #fxCanvas id="fxCanvas" aria-hidden="true"></canvas>
 
 <div class="wrap">
-  <div class="card">
-    <header class="top">
+  <article class="card">
+
+    <!-- ================= HEADER: Marca + KPIs ================= -->
+    <header class="top" role="banner">
       <div class="brand">
         <b>SystemBlacklem · Tips</b>
-        <span>Tip útil en 15 segundos (seguridad, estudio, productividad, bienestar)</span>
-        <small class="subline">En vivo · SSE activo · XP y racha en tiempo real</small>
+        <span>Micro-conocimiento accionable en 15 segundos</span>
+
+        <small class="subline">
+          Progreso persistente · <span class="modeTag">{{ decisionLabel }}</span>
+        </small>
       </div>
 
-      <div class="stats">
-        <div class="pill">
-          <span class="ico" aria-hidden="true">👁️</span>
-          Visitas: <b>{{ profile.total ?? '—' }}</b>
+      <div class="stats" aria-label="Métricas globales">
+        <!-- ✅ Si k.kind === 'online', marcamos isOn si hay onlineNow > 0 -->
+        <div class="pill"
+             *ngFor="let k of headerKpis"
+             [class.isOn]="k.kind === 'online' && onlineNow > 0">
+          <span aria-hidden="true">{{ k.icon }}</span>
+          {{ k.label }} <b>{{ k.value }}</b>
+          <span *ngIf="k.kind === 'online'" class="pulseDot" aria-hidden="true"></span>
         </div>
-
-        <div class="pill pill-online" [class.isOn]="(onlineNow ?? 0) > 0">
-          <span class="ico-eye" aria-hidden="true"></span>
-          Online: <b>{{ onlineNow ?? '—' }}</b>
-          <span class="pulseDot" aria-hidden="true"></span>
-        </div>
-
-        <div class="pill">
-          <span class="ico" aria-hidden="true">🔥</span>
-          Racha: <b>{{ profile.streak ?? '—' }}</b>
-        </div>
-
-        <div class="pill">
-          <span class="ico" aria-hidden="true">⭐</span>
-          Nivel: <b>{{ profile.level ?? '—' }}</b>
-        </div>
-
-        <button class="btn" type="button" (click)="toggleMusic()">
-          <span class="ico" aria-hidden="true">🎵</span>{{ musicLabel }}
-        </button>
       </div>
     </header>
 
-    <main>
-      <!-- IZQUIERDA -->
-      <section class="panel">
-        <div class="chips" role="tablist" aria-label="Temas">
-          <button class="chip" type="button"
-            [attr.aria-pressed]="topic==='seguridad'"
-            (click)="setTopic('seguridad')">
-            <span class="chipIco" aria-hidden="true">🛡️</span>Seguridad
+    <!-- ================= SYSTEM BAR (estado técnico visible) ================= -->
+    <!-- ✅ Si desea: ok cuando sseAlive true, warn cuando false -->
+    <div class="sysBar"
+         [class.ok]="sseAlive"
+         [class.warn]="!sseAlive"
+         *ngIf="decision.systemMessage">
+
+      <div class="sysLeft">
+        <span class="dot" aria-hidden="true"></span>
+        <b>Sistema:</b>
+        <span class="sysText">{{ decision.systemMessage }}</span>
+      </div>
+
+      <div class="sysRight" aria-label="Estado breve">
+        <!-- SSE -->
+        <span class="miniTag" [class.ok]="sseAlive" [class.warn]="!sseAlive">
+          ● SSE: {{ sseAlive ? 'OK' : 'Reconectando' }}
+        </span>
+
+        <!-- Modo -->
+        <span class="miniTag">
+          ● Modo: <b>{{ decisionLabel }}</b>
+        </span>
+
+        <!-- Audio -->
+        <button
+          class="miniBtn"
+          type="button"
+          (click)="toggleMusic()"
+          aria-label="Control de música"
+        >
+          {{ musicLabel }}
+        </button>
+      </div>
+    </div>
+
+    <!-- ================= MAIN ================= -->
+    <main class="grid">
+
+      <!-- ================= IZQUIERDA: TIP ================= -->
+      <section class="panel content" aria-labelledby="tipTitle">
+
+        <nav class="chips" role="tablist" aria-label="Seleccionar tema">
+          <button class="chip"
+                  [class.active]="topic==='seguridad'"
+                  (click)="setTopic('seguridad')"
+                  [attr.aria-pressed]="topic==='seguridad'">
+            🛡️ Seguridad
           </button>
 
-          <button class="chip" type="button"
-            [attr.aria-pressed]="topic==='estudio'"
-            (click)="setTopic('estudio')">
-            <span class="chipIco" aria-hidden="true">📚</span>Estudio
+          <button class="chip"
+                  [class.active]="topic==='estudio'"
+                  (click)="setTopic('estudio')"
+                  [attr.aria-pressed]="topic==='estudio'">
+            📚 Estudio
           </button>
 
-          <button class="chip" type="button"
-            [attr.aria-pressed]="topic==='productividad'"
-            (click)="setTopic('productividad')">
-            <span class="chipIco" aria-hidden="true">⚡</span>Productividad
+          <button class="chip"
+                  [class.active]="topic==='productividad'"
+                  (click)="setTopic('productividad')"
+                  [attr.aria-pressed]="topic==='productividad'">
+            ⚡ Productividad
           </button>
 
-          <button class="chip" type="button"
-            [attr.aria-pressed]="topic==='bienestar'"
-            (click)="setTopic('bienestar')">
-            <span class="chipIco" aria-hidden="true">🧘</span>Bienestar
+          <button class="chip"
+                  [class.active]="topic==='bienestar'"
+                  (click)="setTopic('bienestar')"
+                  [attr.aria-pressed]="topic==='bienestar'">
+            🧘 Bienestar
           </button>
-        </div>
+        </nav>
 
-        <div class="hint" id="hint">
+        <div class="hint" id="hint" *ngIf="hint">
           <span class="hintDot" aria-hidden="true"></span>
           <span>{{ hint }}</span>
         </div>
 
         <h2 class="tipTitle" id="tipTitle">
-          {{ currentTip?.title ?? 'Cargando tip…' }}
+          {{ currentTip?.title ?? 'Cargando conocimiento…' }}
         </h2>
 
-        <ul class="tipSteps" id="tipSteps">
-          <li *ngFor="let s of (currentTip?.steps ?? []); let i = index" class="step">
+        <ul class="tipSteps" *ngIf="(currentTip?.steps?.length ?? 0) > 0; else emptySteps">
+          <li *ngFor="let s of currentTip?.steps ?? []; let i = index" class="step">
             <span class="n">{{ i + 1 }}</span>
             <span class="txt">{{ s }}</span>
           </li>
         </ul>
 
+        <ng-template #emptySteps>
+          <div class="empty">
+            <span class="emptyDot" aria-hidden="true"></span>
+            <span>Sin pasos aún. Intente cambiar el tema o pedir un nuevo tip.</span>
+          </div>
+        </ng-template>
+
         <div class="actions">
-          <button class="btn primary" type="button" (click)="onNewTip()">
-            <span class="ico" aria-hidden="true">🔄</span>Nuevo tip
+          <button class="btn primary"
+                  (click)="onNewTip()"
+                  [disabled]="!canNewTip"
+                  [attr.aria-disabled]="!canNewTip">
+            🔄 Nuevo
           </button>
 
-          <button class="btn" type="button" (click)="onCopy()">
-            <span class="ico" aria-hidden="true">📋</span>Copiar
-          </button>
+          <button class="btn" (click)="onCopy()">📋 Copiar</button>
 
-          <button class="btn" type="button" (click)="onShare()">
-            <span class="ico" aria-hidden="true">📲</span>Compartir
+          <button class="btn"
+                  (click)="onShare()"
+                  [disabled]="!canShare"
+                  [attr.aria-disabled]="!canShare">
+            📲 Compartir
           </button>
+        </div>
+
+        <small class="limits" *ngIf="decision.mode !== 'NORMAL'">
+          Límites activos: máximo <b>{{ decision.maxTipsAllowed }}</b> tips.
+        </small>
+
+        <!-- Banner audio -->
+        <div class="audioBanner" *ngIf="showAudioBanner" role="note" aria-live="polite">
+          <span>Audio bloqueado por el navegador</span>
+          <div class="audioBtns">
+            <button class="btn" (click)="startMusic({ userIntent: true })">Habilitar</button>
+            <button class="btn ghost" (click)="stopMusic()">Omitir</button>
+          </div>
+        </div>
+
+        <!-- Fondo útil -->
+        <div class="contentBottom">
+          <div class="bottomGrid">
+            <div class="bottomCard">
+              <p class="bottomTitle">Meta rápida</p>
+              <div class="bottomRow">
+                <span>Complete 3 tips hoy</span>
+                <b>{{ progress.pct }}%</b>
+              </div>
+            </div>
+
+            <div class="bottomCard">
+              <p class="bottomTitle">Resumen</p>
+              <div class="bottomRow">
+                <span>Historial local</span>
+                <b>{{ historyCount }}</b>
+              </div>
+              <div class="bottomRow muted">
+                <span>Días activos (7)</span>
+                <b>{{ insights.activeDaysLast7 ?? '—' }}</b>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
 
-      <!-- DERECHA -->
-      <aside class="panel side">
-        <h3>Estado</h3>
+      <!-- ================= DERECHA: PROGRESO + INSIGHTS ================= -->
+      <aside class="panel side" aria-label="Progreso e Insights">
 
-        <div class="mini">
-          <div class="row">
-            <span>Historial (local)</span>
-            <b>{{ historyCount }}</b>
+        <section class="sideBlock">
+          <h3>Progreso</h3>
+
+          <div class="meter">
+            <div class="meterTop">
+              <span>XP</span>
+              <span><b>{{ progress.x }}</b> / {{ progress.nextGoal }}</span>
+            </div>
+
+            <div class="bar"><i [style.width.%]="progress.pct"></i></div>
+
+            <div class="meterFoot">
+              <span>Faltan <b>{{ progress.left }}</b> XP</span>
+              <span>Próx. nivel <b>{{ progress.nextLevel }}</b></span>
+            </div>
           </div>
-          <div class="row">
-            <span>Audio</span>
-            <b>{{ musicLabel }}</b>
-          </div>
-          <div class="row">
-            <span>Acciones (7 días)</span>
-            <b>{{ insights.activeDaysLast7 ?? '—' }}</b>
-          </div>
-        </div>
+        </section>
 
         <div class="sep"></div>
 
-        <div class="meter" aria-label="Progreso de nivel">
-          <div class="meterTop">
-            <span>Progreso</span>
-            <span><b>{{ progress.x }}</b> XP · Próx. nivel <b>{{ progress.nextLevel }}</b></span>
+        <section class="sideBlock">
+          <h3>Insights · 7 días</h3>
+
+          <div class="tagRow">
+            <div class="tag">
+              ⏳ <small>{{ peakHourLabel }}</small>
+              <span class="tagSub">Hora pico</span>
+            </div>
+
+            <div class="tag">
+              🔥 <small>{{ topActionLabel }}</small>
+              <span class="tagSub">Acción dominante</span>
+            </div>
+
+            <div class="tag ok">
+              ✅ <small>{{ healthHint }}</small>
+              <span class="tagSub">Balance</span>
+            </div>
           </div>
 
-          <div class="bar" aria-hidden="true">
-            <i [style.width.%]="progress.pct"></i>
-          </div>
+          <ul class="list">
+            <li *ngFor="let a of actionRows">
+              <span>{{ a.label }}</span><b>{{ a.value }}</b>
+            </li>
+            <li *ngIf="actionRows.length === 0"><span>Sin acciones</span><b>—</b></li>
+          </ul>
 
-          <div class="meterFoot">
-            <span>Faltan <b>{{ progress.left }}</b> XP</span>
-            <span>Meta: <b>{{ progress.nextGoal }}</b> XP</span>
-          </div>
-        </div>
-
-        <div class="sep"></div>
-
-        <h3>Insights (últimos 7 días)</h3>
-
-        <div class="tagRow">
-          <div class="tag">
-            <span aria-hidden="true">⏳</span>
-            <small>{{ peakHourLabel }}</small>
-            <span class="tagSub">Hora pico</span>
-          </div>
-          <div class="tag">
-            <span aria-hidden="true">🔥</span>
-            <small>{{ topActionLabel }}</small>
-            <span class="tagSub">Acción top</span>
-          </div>
-          <div class="tag ok">
-            <span aria-hidden="true">✅</span>
-            <small>{{ healthHint }}</small>
-            <span class="tagSub">Balance</span>
-          </div>
-        </div>
-
-        <ul class="list">
-          <li *ngFor="let a of actionRows">
-            <span>{{ a.label }}</span><b>{{ a.value }}</b>
-          </li>
-          <li *ngIf="actionRows.length===0"><span>Sin acciones registradas</span><b>—</b></li>
-        </ul>
-
-        <ul class="list">
-          <li *ngFor="let h of hourRows">
-            <span>Hora {{ h.key }}</span><b>{{ h.value }}</b>
-          </li>
-          <li *ngIf="hourRows.length===0"><span>Sin horas pico</span><b>—</b></li>
-        </ul>
-
-        <div class="audioBanner" *ngIf="showAudioBanner">
-          <span>Para activar música, toque “Habilitar”.</span>
-          <div class="audioBtns">
-            <button class="btn" type="button" (click)="startMusic()">Habilitar</button>
-            <button class="btn ghost" type="button" (click)="stopMusic()">No gracias</button>
-          </div>
-        </div>
+          <details class="details" *ngIf="hourRows.length > 0">
+            <summary>Ver distribución por hora</summary>
+            <ul class="list">
+              <li *ngFor="let h of hourRows">
+                <span>{{ h.key }}</span><b>{{ h.value }}</b>
+              </li>
+            </ul>
+          </details>
+        </section>
       </aside>
-    </main>
-  </div>
-</div>
 
-<audio #bgMusic preload="auto" loop>
-  <!-- <source src="assets/audio.mp3" type="audio/mpeg"> -->
-</audio>
+    </main>
+  </article>
+</div>
 
 <div class="toast" role="status" aria-live="polite" [class.show]="toastVisible">
   {{ toastMsg }}
