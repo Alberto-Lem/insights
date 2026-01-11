@@ -85,6 +85,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
 
   toastMsg = '';
   toastVisible = false;
+  private tToast?: ReturnType<typeof setTimeout>;
 
   progress = { x: 0, nextLevel: 2, nextGoal: 100, pct: 0, left: 100 };
 
@@ -133,6 +134,9 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
   private sseRetry = 0;
   private tSseRetry?: ReturnType<typeof setTimeout>;
 
+  // ✅ evita warning de vibrate antes del primer gesto real
+  private userInteracted = false;
+
   private syncHostClass() {
     const tier = this.cardSkinClass || 'tier-bronze';
     const state = `state-${(this.cardState || 'IDLE').toLowerCase()}`;
@@ -141,10 +145,6 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
 
   get musicState() {
     return this.audioSrv.state;
-  }
-
-  get showAudioBanner() {
-    return this.audioSrv.showBanner;
   }
 
   get musicLabel(): string {
@@ -189,19 +189,27 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
   }
 
   async copyVisitorId() {
+    this.userInteracted = true;
     try {
       await navigator.clipboard.writeText(this.visitorIdFull);
       this.toast('✅ ID copiado');
       this.bumpCardState('COPY_TIP');
+
+      await this.audioSrv.userKick();
       void this.audioSrv.sfx('COPY');
     } catch {
       this.toast('⚠️ No se pudo copiar');
+
+      await this.audioSrv.userKick();
       void this.audioSrv.sfx('ERROR');
     }
   }
 
   ngOnInit(): void {
     this.ref = getRefFromUrl(location.href);
+
+    // ✅ Cuando el browser bloquee audio => TOAST (no banner)
+    this.audioSrv.setBlockedHandler((msg) => this.toast(msg));
 
     // ✅ Fuente única de visitorId: Storage
     this.visitorId = this.storage.getVisitorId();
@@ -215,7 +223,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     const ms = (prefs as any)?.musicState;
     if (ms === 'ON' || ms === 'OFF' || ms === 'AUTO') this.audioSrv.state = ms;
 
-    // ✅ Suscripción mente: controla FX + hint; evita duplicar ingest desde App
+    // ✅ Suscripción mente: controla FX + hint
     this.mindSub = this.mind.observe().subscribe((state) => {
       this.fx.setMode(this.mind.getFxMode(state.mood));
       this.hint = this.mind.getToneLine(state, this.topic);
@@ -228,7 +236,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
       this.ui();
     });
 
-    // ✅ Topic inicial: centralice en TipsService
+    // ✅ Topic inicial
     this.tipsSrv.setTopic(this.topic);
     this.pickNewTip();
 
@@ -242,10 +250,8 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
       this.fx.start();
     }
 
-    this.audioSrv.installAutoKick(async () => {
-      await this.audioSrv.sfx('APP_READY');
-      this.ui();
-    });
+    // ✅ NO intentar arrancar AudioContext aquí (no hay gesto del usuario)
+    //    Solo se desbloquea por clicks reales: botones (Nuevo/Copiar/Compartir/Audio)
 
     void this.loadMe();
     void this.track();
@@ -279,12 +285,16 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
 
     this.tSseRetry && clearTimeout(this.tSseRetry);
 
+    this.tToast && clearTimeout(this.tToast);
+
     this.audioSrv.destroy();
   }
 
   /* ===================== Actions ===================== */
 
-  setTopic(t: Topic) {
+  async setTopic(t: Topic) {
+    this.userInteracted = true;
+
     this.topic = t;
     this.persistPrefs();
 
@@ -294,14 +304,22 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     this.bumpCardState('TOPIC');
     void this.sendEvent('TOPIC');
 
+    // ✅ gesto real: desbloquea + SFX
+    await this.audioSrv.userKick();
+    void this.audioSrv.sfx('TOPIC_CHANGE');
+
     this.applyIdentityVisuals('ACTION', 'TOPIC');
     this.pushAudioHint();
     this.ui();
   }
 
-  onNewTip() {
+  async onNewTip() {
+    this.userInteracted = true;
+
     if (!this.canNewTip) {
       this.toast(this.decision.systemMessage || 'Acción limitada por el sistema.');
+
+      await this.audioSrv.userKick();
       void this.audioSrv.sfx('ERROR');
       return;
     }
@@ -311,31 +329,42 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     this.bumpCardState('NEW_TIP');
     void this.sendEvent('NEW_TIP');
 
+    await this.audioSrv.userKick();
+    void this.audioSrv.sfx('NEW_TIP');
+
     this.applyIdentityVisuals('ACTION', 'NEW_TIP');
     this.pushAudioHint();
     this.ui();
   }
 
   async onCopy() {
+    this.userInteracted = true;
+
     const tip = this.currentTip;
     const text = tip ? this.tipsSrv.toText(tip) : '';
     const ok = await this.copyText(text);
 
     this.toast(ok ? '✅ Copiado al portapapeles' : '⚠️ No se pudo copiar');
-
     if (tip) this.tipsSrv.copyTip(tip, ok);
 
     this.bumpCardState('COPY_TIP');
     this.applyIdentityVisuals('ACTION', 'COPY_TIP');
     await this.sendEvent('COPY_TIP');
 
+    await this.audioSrv.userKick();
+    void this.audioSrv.sfx(ok ? 'COPY' : 'ERROR');
+
     this.pushAudioHint();
     this.ui();
   }
 
   async onShare() {
+    this.userInteracted = true;
+
     if (!this.canShare) {
       this.toast(this.decision.systemMessage || 'Compartir está limitado por el sistema.');
+
+      await this.audioSrv.userKick();
       void this.audioSrv.sfx('ERROR');
       return;
     }
@@ -352,19 +381,24 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     this.applyIdentityVisuals('ACTION', 'SHARE_TIP');
     await this.sendEvent('SHARE_TIP');
 
+    await this.audioSrv.userKick();
+    void this.audioSrv.sfx(ok ? 'SHARE' : 'ERROR');
+
     this.pushAudioHint();
     this.ui();
   }
 
-  /* ===================== Audio controls (SFX) ===================== */
+  /* ===================== Audio controls ===================== */
 
-  toggleMusic() {
+  async toggleMusic() {
+    this.userInteracted = true;
+
     this.audioSrv.toggle();
     this.persistPrefs();
 
-    // ✅ Si el usuario cambió a ON o AUTO, intente desbloquear en ese gesto.
+    // ✅ al activar ON/AUTO, desbloquear en ESTE gesto y dar feedback
     if (this.audioSrv.state !== 'OFF') {
-      void this.startMusic({ userIntent: true });
+      await this.startMusic({ userIntent: true });
       return;
     }
 
@@ -372,25 +406,30 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
   }
 
   async startMusic(_meta?: { userIntent?: boolean }) {
-    const ok = await this.audioSrv.boot();
+    this.userInteracted = true;
+
+    const ok = await this.audioSrv.userKick();
     if (!ok) {
-      // ✅ Si el navegador no soporta AudioContext o no permite resume, muestre banner
-      this.audioSrv.showBanner = true;
+      // toast lo maneja AudioService mediante setBlockedHandler
+      this.persistPrefs();
       this.ui();
       return;
     }
 
-    // ✅ Ya desbloqueado: quite banner y suene confirmación
-    this.audioSrv.showBanner = false;
-    await this.audioSrv.sfx('APP_READY');
+    // confirmación discreta
+    void this.audioSrv.sfx('APP_READY');
 
     this.persistPrefs();
     this.ui();
   }
 
   stopMusic() {
+    this.userInteracted = true;
+
     this.audioSrv.stop();
     this.persistPrefs();
+
+    // (Opcional) sin SFX porque el usuario apagó audio
     this.ui();
   }
 
@@ -421,7 +460,9 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
   private pickNewTip() {
     this.currentTip = this.tipsSrv.nextTip(this.topic) as TipWithId;
     this.historyCount = this.storage.getTipHistoryIds().length;
-    navigator.vibrate?.(18);
+
+    // ✅ sin warning: solo vibrar después de gesto real
+    if (this.userInteracted) navigator.vibrate?.(18);
   }
 
   private persistPrefs() {
@@ -436,10 +477,11 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     this.toastVisible = true;
     this.ui();
 
-    setTimeout(() => {
+    if (this.tToast) clearTimeout(this.tToast);
+    this.tToast = setTimeout(() => {
       this.toastVisible = false;
       this.ui();
-    }, 1400);
+    }, 1600);
   }
 
   /* ===================== Progress ===================== */
@@ -462,6 +504,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
 
     this.updateCardVisuals();
 
+    // ✅ SFX solo si ya fue desbloqueado por el usuario (evita spam de toast por SSE/timers)
     if (typeof prevLevel === 'number' && level > prevLevel) {
       void this.audioSrv.sfx('LEVEL_UP', { strength: 1 });
     }
@@ -473,6 +516,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
   /* ===================== API helpers ===================== */
 
   private apiEndpoints() {
+    // Nota: aquí mantengo tu firma actual
     return this.api.endpoints(this.PAGE_KEY, this.visitorId);
   }
 
@@ -550,9 +594,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
   }
 
   private async sendEvent(typeRaw: string) {
-    const type = String(typeRaw ?? '')
-      .trim()
-      .toUpperCase();
+    const type = String(typeRaw ?? '').trim().toUpperCase();
     if (!this.isValidType(type)) return;
 
     const res = await this.api.sendEvent<VisitProfileResponse>(this.PAGE_KEY, {
@@ -575,7 +617,6 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
       this.applyIdentityVisuals('PROGRESS', type);
     }
 
-    // ✅ si el backend se satura, estos llamados pueden fallar: no debe romper UI
     void this.loadInsights(true);
     void this.loadTotal();
 
@@ -606,8 +647,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
 
   /* ===================== trackBy ===================== */
 
-  trackByKpi = (_: number, k: { label: string; kind?: 'online' }) =>
-    `${k.kind ?? 'kpi'}:${k.label}`;
+  trackByKpi = (_: number, k: { label: string; kind?: 'online' }) => `${k.kind ?? 'kpi'}:${k.label}`;
   trackByAction = (_: number, a: { label: string }) => a.label;
   trackByHour = (_: number, h: { key: string }) => h.key;
   trackByStep = (i: number, s: string) => `${i}:${s}`;
@@ -667,11 +707,10 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
   }
 
   private scheduleSseReconnect(reason: 'error' | 'watchdog' | 'manual') {
-    // ✅ evita reconectar en loop
     if (this.tSseRetry) return;
 
     this.sseRetry = Math.min(10, this.sseRetry + 1);
-    const base = 900; // ms
+    const base = 900;
     const max = 20_000;
     const wait = Math.min(max, Math.round(base * Math.pow(1.6, this.sseRetry)));
 
@@ -691,10 +730,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
   }
 
   private async pollOnlineOnce(onlineUrl: string) {
-    const res = await this.api.apiFetch<{ page?: string; online: number }>(
-      onlineUrl,
-      this.visitorId
-    );
+    const res = await this.api.apiFetch<{ page?: string; online: number }>(onlineUrl, this.visitorId);
     if (!res) return;
 
     this.syncVisitorId(res.visitorId);
@@ -707,6 +743,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
       this.applyIdentityVisuals('ONLINE', 'SSE');
     });
 
+    // ✅ si está bloqueado, AudioService solo hace toast si corresponde
     void this.audioSrv.sfx('ONLINE_PULSE', { strength: Math.min(1, 0.25 + this.onlineNow / 50) });
     this.pushAudioHint();
   }
@@ -714,7 +751,6 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
   private startRealtimeSse() {
     const { stream, online } = this.apiEndpoints();
 
-    // ✅ reset UI + limpiar cosas anteriores
     this.closeSse('reconnect');
 
     this.ui(() => {
@@ -724,7 +760,6 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
       this.applyIdentityVisuals('ONLINE', 'SSE');
     });
 
-    // ✅ si SSE falla, al menos mantener “online” por polling
     this.tOnlinePoll = setInterval(() => void this.pollOnlineOnce(online), 12_000);
     void this.pollOnlineOnce(online);
 
@@ -745,7 +780,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
       this.lastSseTs = Date.now();
       if (!this.sseAlive) {
         this.sseAlive = true;
-        this.sseRetry = 0; // ✅ éxito: reset backoff
+        this.sseRetry = 0;
       }
     };
 
@@ -847,7 +882,6 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
       this.tipsSrv.sseDown();
       this.pushAudioHint();
 
-      // ✅ cierre y reconexión con backoff
       try {
         this.es?.close();
       } catch {}

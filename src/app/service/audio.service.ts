@@ -25,9 +25,8 @@ const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
 
 @Injectable({ providedIn: 'root' })
 export class AudioService {
-  // UI
+  // UI state (persistes en StorageService)
   state: 'ON' | 'OFF' | 'AUTO' = 'AUTO';
-  showBanner = false;
 
   private ctx?: AudioContext;
   private master?: GainNode;
@@ -44,117 +43,13 @@ export class AudioService {
     stressScore: 0.35,
   };
 
-  /** Instala el gesto para desbloquear audio (Chrome/Safari/iOS). */
-  installAutoKick(onKick?: () => void | Promise<void>) {
-    const kick = async () => {
-      const ok = await this.boot();
-      if (!ok) {
-        this.showBanner = true;
-        return;
-      }
-      this.showBanner = false;
-      await onKick?.();
+  // ✅ callback para que App muestre TOAST (no banner)
+  private onBlocked?: (msg: string) => void;
+  private lastBlockedToastAt = 0;
 
-      window.removeEventListener('pointerdown', kick);
-      window.removeEventListener('keydown', kick);
-      window.removeEventListener('touchstart', kick);
-    };
-
-    window.addEventListener('pointerdown', kick, { passive: true });
-    window.addEventListener('touchstart', kick, { passive: true });
-    window.addEventListener('keydown', kick);
-  }
-
-  /**
-   * Boot idempotente:
-   * - Reusa AudioContext si ya existe
-   * - Resume si está suspended
-   * - Marca unlocked SOLO si queda running
-   * - Hace un “ping” inaudible para Safari
-   */
-  async boot(): Promise<boolean> {
-    if (this.unlocked && this.ctx?.state === 'running') return true;
-    if (this.booting) return this.unlocked;
-
-    this.booting = true;
-    try {
-      const Ctx = (window.AudioContext || (window as any).webkitAudioContext) as typeof AudioContext | undefined;
-      if (!Ctx) {
-        this.unlocked = false;
-        this.showBanner = true;
-        return false;
-      }
-
-      // Reuse si existe
-      if (!this.ctx) this.ctx = new Ctx();
-
-      // Intentar resume
-      if (this.ctx.state === 'suspended') {
-        try { await this.ctx.resume(); } catch {}
-      }
-
-      // Si aún no corre, no “fingir” unlocked
-      if (this.ctx.state !== 'running') {
-        this.unlocked = false;
-        this.showBanner = true;
-        return false;
-      }
-
-      // Crear grafo solo una vez
-      if (!this.master) {
-        this.master = this.ctx.createGain();
-        this.master.gain.value = 0.7;
-
-        this.limiter = this.ctx.createDynamicsCompressor();
-        this.limiter.threshold.value = -14;
-        this.limiter.knee.value = 20;
-        this.limiter.ratio.value = 8;
-        this.limiter.attack.value = 0.003;
-        this.limiter.release.value = 0.12;
-
-        this.master.connect(this.limiter);
-        this.limiter.connect(this.ctx.destination);
-      }
-
-      // Ping inaudible (ayuda en Safari/iOS a “asentar” el pipeline)
-      this.ping();
-
-      this.unlocked = true;
-      this.showBanner = false;
-      return true;
-    } finally {
-      this.booting = false;
-    }
-  }
-
-  private ping() {
-    if (!this.ctx || !this.master) return;
-
-    const now = this.ctx.currentTime;
-    const o = this.ctx.createOscillator();
-    const g = this.ctx.createGain();
-
-    o.type = 'sine';
-    o.frequency.setValueAtTime(220, now);
-    g.gain.setValueAtTime(0.0001, now);
-    g.gain.exponentialRampToValueAtTime(0.00012, now + 0.005);
-    g.gain.exponentialRampToValueAtTime(0.0001, now + 0.03);
-
-    o.connect(g);
-    g.connect(this.master);
-
-    o.start(now);
-    o.stop(now + 0.035);
-  }
-
-  destroy(): void {
-    try { this.ctx?.close(); } catch {}
-    this.ctx = undefined;
-    this.master = undefined;
-    this.limiter = undefined;
-    this.unlocked = false;
-    this.showBanner = false;
-    this.booting = false;
+  /** App registra aquí la forma de notificar (toast). */
+  setBlockedHandler(fn?: (msg: string) => void) {
+    this.onBlocked = fn;
   }
 
   setHint(h: SysSfxHint) {
@@ -174,17 +69,122 @@ export class AudioService {
     this.state = 'OFF';
   }
 
-  /**
-   * Llamada única: reproduce un SFX corto para un evento del sistema.
-   * ✅ Fix clave: en AUTO NO se retorna antes de boot(); se intenta boot y si falla se activa banner.
-   */
+  /** ✅ Llamar SIEMPRE desde un click/tap real (buttons). */
+  async userKick(): Promise<boolean> {
+    if (this.state === 'OFF') return false;
+    const ok = await this.boot();
+    if (!ok) this.notifyBlocked();
+    return ok;
+  }
+
+  /** Boot idempotente: crea/reusa y resume, pero SOLO “unlocked” si queda running. */
+  private async boot(): Promise<boolean> {
+    if (this.unlocked && this.ctx?.state === 'running') return true;
+    if (this.booting) return this.unlocked;
+
+    this.booting = true;
+    try {
+      const Ctx = (window.AudioContext || (window as any).webkitAudioContext) as
+        | typeof AudioContext
+        | undefined;
+
+      if (!Ctx) {
+        this.unlocked = false;
+        return false;
+      }
+
+      if (!this.ctx) this.ctx = new Ctx();
+
+      // intentar resume
+      if (this.ctx.state === 'suspended') {
+        try { await this.ctx.resume(); } catch {}
+      }
+
+      if (this.ctx.state !== 'running') {
+        this.unlocked = false;
+        return false;
+      }
+
+      // grafo una sola vez
+      if (!this.master) {
+        this.master = this.ctx.createGain();
+        this.master.gain.value = 0.7;
+
+        this.limiter = this.ctx.createDynamicsCompressor();
+        this.limiter.threshold.value = -14;
+        this.limiter.knee.value = 20;
+        this.limiter.ratio.value = 8;
+        this.limiter.attack.value = 0.003;
+        this.limiter.release.value = 0.12;
+
+        this.master.connect(this.limiter);
+        this.limiter.connect(this.ctx.destination);
+      }
+
+      // ping inaudible (Safari/iOS)
+      this.ping();
+
+      this.unlocked = true;
+      return true;
+    } finally {
+      this.booting = false;
+    }
+  }
+
+  private notifyBlocked() {
+    const now = Date.now();
+    if (now - this.lastBlockedToastAt < 1600) return;
+    this.lastBlockedToastAt = now;
+    this.onBlocked?.('🔇 Audio bloqueado: toque/clic en la página para habilitar sonido.');
+  }
+
+  private ping() {
+    if (!this.ctx || !this.master) return;
+    const now = this.ctx.currentTime;
+
+    const o = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+
+    o.type = 'sine';
+    o.frequency.setValueAtTime(220, now);
+
+    g.gain.setValueAtTime(0.0001, now);
+    g.gain.exponentialRampToValueAtTime(0.00012, now + 0.005);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + 0.03);
+
+    o.connect(g);
+    g.connect(this.master);
+
+    o.start(now);
+    o.stop(now + 0.035);
+  }
+
+  destroy(): void {
+    try { this.ctx?.close(); } catch {}
+    this.ctx = undefined;
+    this.master = undefined;
+    this.limiter = undefined;
+    this.unlocked = false;
+    this.booting = false;
+    this.onBlocked = undefined;
+  }
+
+  /** SFX: si está bloqueado, NO rompe; solo notifica (toast) y sale. */
   async sfx(ev: SysSfxEvent, meta?: { strength?: number }): Promise<void> {
     if (this.state === 'OFF') return;
 
-    const ok = await this.boot();
-    if (!ok || !this.ctx || !this.master) return;
+    // AUTO: no intente “forzar” si aún no está desbloqueado
+    if (this.state === 'AUTO' && !this.unlocked) {
+      this.notifyBlocked();
+      return;
+    }
 
-    // Si está en AUTO, y el browser permite (unlocked), suena; si no, ya retornó arriba.
+    const ok = await this.boot();
+    if (!ok || !this.ctx || !this.master) {
+      this.notifyBlocked();
+      return;
+    }
+
     const now = this.ctx.currentTime;
     const stress = clamp01(this.lastHint.stressScore ?? 0.35);
     const focus = clamp01(this.lastHint.focusScore ?? 0.6);
