@@ -100,6 +100,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
 
   onlineNow = 0;
   sseAlive = false;
+
   private es?: EventSource;
   private lastSseTs = 0;
 
@@ -108,7 +109,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
 
   private tTrack?: ReturnType<typeof setInterval>;
   private tInsights?: ReturnType<typeof setInterval>;
-  private tOnline?: ReturnType<typeof setInterval>;
+  private tOnlinePoll?: ReturnType<typeof setInterval>;
   private tSseWatch?: ReturnType<typeof setInterval>;
   private tTotal?: ReturnType<typeof setInterval>;
 
@@ -127,6 +128,10 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
   cardState: 'IDLE' | 'LISTEN' | 'THINK' | 'SPEAK' = 'IDLE';
 
   private avatarSalt = 0;
+
+  // ✅ control de reintentos SSE (backoff)
+  private sseRetry = 0;
+  private tSseRetry?: ReturnType<typeof setTimeout>;
 
   private syncHostClass() {
     const tier = this.cardSkinClass || 'tier-bronze';
@@ -219,7 +224,6 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
         this.profileBadge = 'Sistema activo';
       }
 
-      // ✅ hint para SFX (mezcla mente + SSE + decision)
       this.pushAudioHint();
       this.ui();
     });
@@ -255,22 +259,26 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     this.tInsights = setInterval(() => void this.loadInsights(false), 25_000);
     this.tTotal = setInterval(() => void this.loadTotal(), 20_000);
 
+    // ✅ watchdog: si SSE queda “silencioso”, reconecte con backoff
     this.tSseWatch = setInterval(() => {
       if (!this.sseAlive) return;
-      if (Date.now() - this.lastSseTs > 20_000) this.startRealtimeSse();
+      if (Date.now() - this.lastSseTs > 20_000) this.scheduleSseReconnect('watchdog');
     }, 10_000);
   }
 
   ngOnDestroy(): void {
     this.fx.stop();
-    this.es?.close();
+    this.closeSse('destroy');
+
     this.mindSub?.unsubscribe();
 
     this.tTrack && clearInterval(this.tTrack);
     this.tInsights && clearInterval(this.tInsights);
-    this.tOnline && clearInterval(this.tOnline);
+    this.tOnlinePoll && clearInterval(this.tOnlinePoll);
     this.tSseWatch && clearInterval(this.tSseWatch);
     this.tTotal && clearInterval(this.tTotal);
+
+    this.tSseRetry && clearTimeout(this.tSseRetry);
 
     this.audioSrv.destroy();
   }
@@ -281,10 +289,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     this.topic = t;
     this.persistPrefs();
 
-    // ✅ 1 sola ruta: TipsService maneja mente + SFX
     this.tipsSrv.setTopic(t);
-
-    // nuevo tip del topic
     this.pickNewTip();
 
     this.bumpCardState('TOPIC');
@@ -302,7 +307,6 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
       return;
     }
 
-    // ✅ 1 sola ruta: TipsService maneja mente + SFX + stats seen
     this.pickNewTip();
 
     this.bumpCardState('NEW_TIP');
@@ -320,7 +324,6 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
 
     this.toast(ok ? '✅ Copiado al portapapeles' : '⚠️ No se pudo copiar');
 
-    // ✅ registro único (stats + mind + SFX) según resultado
     if (tip) this.tipsSrv.copyTip(tip, ok);
 
     this.bumpCardState('COPY_TIP');
@@ -341,11 +344,9 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     const tip = this.currentTip;
     const text = tip ? this.tipsSrv.toText(tip) : '';
 
-    // primero intente share nativo
     const ok = await this.shareNative(text);
     if (!ok) window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank', 'noopener');
 
-    // ✅ registro único (stats + mind + SFX) según resultado
     if (tip) this.tipsSrv.shareTip(tip, ok, ok ? 'native' : 'wa');
 
     this.bumpCardState('SHARE_TIP');
@@ -377,12 +378,10 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
   }
 
   private pushAudioHint() {
-    // ✅ Mezcla mente + estado SSE + modo de decisión sin inventar “música”
     const mh = this.mind.getAudioHint();
     const mode = this.decision.mode;
 
-    const focusScore =
-      mode === 'FOCUS' ? Math.max(mh.focusScore, 0.85) : mh.focusScore;
+    const focusScore = mode === 'FOCUS' ? Math.max(mh.focusScore, 0.85) : mh.focusScore;
 
     const stressScore =
       mode === 'REST'
@@ -457,7 +456,6 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
   /* ===================== API helpers ===================== */
 
   private apiEndpoints() {
-    // ✅ use el visitorId ya persistido
     return this.api.endpoints(this.PAGE_KEY, this.visitorId);
   }
 
@@ -476,9 +474,9 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     const res = await this.api.apiFetch<VisitProfileResponse>(me, this.visitorId);
     if (!res) return;
 
-    this.syncVisitorId((res as any).visitorId);
+    this.syncVisitorId(res.visitorId);
 
-    const d = (res as any).data ?? null;
+    const d = res.data ?? null;
     if (!d) return;
 
     const prevLevel = Number((this.profile as any)?.level ?? 0);
@@ -499,9 +497,9 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     const res = await this.api.apiFetch<VisitProfileResponse>(track, this.visitorId);
     if (!res) return;
 
-    this.syncVisitorId((res as any).visitorId);
+    this.syncVisitorId(res.visitorId);
 
-    const d = (res as any).data ?? null;
+    const d = res.data ?? null;
     if (!d) return;
 
     const prevLevel = Number((this.profile as any)?.level ?? 0);
@@ -520,9 +518,9 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     const res = await this.api.apiFetch<{ page?: string; total: number }>(total, this.visitorId);
     if (!res) return;
 
-    this.syncVisitorId((res as any).visitorId);
+    this.syncVisitorId(res.visitorId);
 
-    const d = (res as any).data ?? null;
+    const d = res.data ?? null;
     if (!d) return;
 
     this.ui(() => {
@@ -534,7 +532,6 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     return t === 'NEW_TIP' || t === 'COPY_TIP' || t === 'SHARE_TIP' || t === 'TOPIC';
   }
 
-  /** ✅ Unificado: use VisitsApiService.sendEvent (meta tz/lang incluido) */
   private async sendEvent(typeRaw: string) {
     const type = String(typeRaw ?? '').trim().toUpperCase();
     if (!this.isValidType(type)) return;
@@ -546,9 +543,10 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     });
 
     if (!res) return;
-    this.syncVisitorId((res as any).visitorId);
 
-    const d = (res as any).data ?? null;
+    this.syncVisitorId(res.visitorId);
+
+    const d = res.data ?? null;
     if (d) {
       const prevLevel = Number((this.profile as any)?.level ?? 0);
       const prevStreak = Number((this.profile as any)?.streak ?? 0);
@@ -558,8 +556,9 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
       this.applyIdentityVisuals('PROGRESS', type);
     }
 
-    await this.loadInsights(true);
-    await this.loadTotal();
+    // ✅ si el backend se satura, estos llamados pueden fallar: no debe romper UI
+    void this.loadInsights(true);
+    void this.loadTotal();
 
     this.pushAudioHint();
     this.ui();
@@ -574,9 +573,9 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     const res = await this.api.apiFetch<VisitInsightsResponse>(insights, this.visitorId);
     if (!res) return;
 
-    this.syncVisitorId((res as any).visitorId);
+    this.syncVisitorId(res.visitorId);
 
-    const d = (res as any).data ?? null;
+    const d = res.data ?? null;
     if (!d) return;
 
     this.insights = { ...(d as any), _ts: now };
@@ -631,43 +630,77 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
 
   /* ===================== SSE ===================== */
 
+  private closeSse(_reason: string) {
+    try {
+      this.es?.close();
+    } catch {}
+    this.es = undefined;
+
+    if (this.tOnlinePoll) clearInterval(this.tOnlinePoll);
+    this.tOnlinePoll = undefined;
+
+    if (this.tSseRetry) clearTimeout(this.tSseRetry);
+    this.tSseRetry = undefined;
+  }
+
+  private scheduleSseReconnect(reason: 'error' | 'watchdog' | 'manual') {
+    // ✅ evita reconectar en loop
+    if (this.tSseRetry) return;
+
+    this.sseRetry = Math.min(10, this.sseRetry + 1);
+    const base = 900; // ms
+    const max = 20_000;
+    const wait = Math.min(max, Math.round(base * Math.pow(1.6, this.sseRetry)));
+
+    this.ui(() => {
+      this.sseAlive = false;
+      this.profileBadge = reason === 'watchdog' ? 'SSE silencioso…' : 'Reconectando…';
+      this.applyIdentityVisuals('ONLINE', 'SSE');
+    });
+
+    this.tipsSrv.sseDown();
+    this.pushAudioHint();
+
+    this.tSseRetry = setTimeout(() => {
+      this.tSseRetry = undefined;
+      this.startRealtimeSse();
+    }, wait);
+  }
+
+  private async pollOnlineOnce(onlineUrl: string) {
+    const res = await this.api.apiFetch<{ page?: string; online: number }>(onlineUrl, this.visitorId);
+    if (!res) return;
+
+    this.syncVisitorId(res.visitorId);
+
+    const d = res.data ?? null;
+    if (!d) return;
+
+    this.ui(() => {
+      this.onlineNow = Number(d.online ?? 0);
+      this.applyIdentityVisuals('ONLINE', 'SSE');
+    });
+
+    void this.audioSrv.sfx('ONLINE_PULSE', { strength: Math.min(1, 0.25 + this.onlineNow / 50) });
+    this.pushAudioHint();
+  }
+
   private startRealtimeSse() {
     const { stream, online } = this.apiEndpoints();
 
-    if (this.tOnline) clearInterval(this.tOnline);
-    this.tOnline = undefined;
-
-    this.es?.close();
-    this.es = undefined;
+    // ✅ reset UI + limpiar cosas anteriores
+    this.closeSse('reconnect');
 
     this.ui(() => {
       this.sseAlive = false;
       this.lastSseTs = Date.now();
-      this.profileBadge = 'Reconectando…';
+      this.profileBadge = 'Conectando SSE…';
       this.applyIdentityVisuals('ONLINE', 'SSE');
     });
 
-    // ✅ reflejar en mente (sin duplicar en App + TipsService)
-    this.tipsSrv.sseDown();
-    this.pushAudioHint();
-
-    this.api
-      .apiFetch<{ page?: string; online: number }>(online, this.visitorId)
-      .then((res) => {
-        if (!res) return;
-        this.syncVisitorId((res as any).visitorId);
-
-        const d = (res as any).data ?? null;
-        if (!d) return;
-
-        this.ui(() => {
-          this.onlineNow = Number(d.online ?? 0);
-          this.applyIdentityVisuals('ONLINE', 'SSE');
-        });
-
-        void this.audioSrv.sfx('ONLINE_PULSE', { strength: Math.min(1, 0.25 + this.onlineNow / 50) });
-      })
-      .finally(() => this.pushAudioHint());
+    // ✅ si SSE falla, al menos mantener “online” por polling
+    this.tOnlinePoll = setInterval(() => void this.pollOnlineOnce(online), 12_000);
+    void this.pollOnlineOnce(online);
 
     const openSse = (this.api as any).openSse?.bind(this.api) as ((url: string) => EventSource) | undefined;
     this.es = openSse ? openSse(stream) : new EventSource(stream);
@@ -682,7 +715,15 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
 
     const markAlive = () => {
       this.lastSseTs = Date.now();
-      if (!this.sseAlive) this.sseAlive = true;
+      if (!this.sseAlive) {
+        this.sseAlive = true;
+        this.sseRetry = 0; // ✅ éxito: reset backoff
+      }
+    };
+
+    const markOkUi = () => {
+      this.profileBadge = 'SSE OK';
+      this.applyIdentityVisuals('ONLINE', 'SSE');
     };
 
     this.es.addEventListener('hello', (e: MessageEvent) => {
@@ -692,9 +733,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
         markAlive();
         if (msg?.visitorId) this.syncVisitorId(String(msg.visitorId));
         if (msg?.online != null) this.onlineNow = Number(msg.online);
-
-        this.profileBadge = 'SSE OK';
-        this.applyIdentityVisuals('ONLINE', 'SSE');
+        markOkUi();
       });
 
       this.tipsSrv.sseUp();
@@ -704,8 +743,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     this.es.addEventListener('ping', () => {
       this.ui(() => {
         markAlive();
-        this.profileBadge = 'SSE OK';
-        this.applyIdentityVisuals('ONLINE', 'SSE');
+        markOkUi();
       });
       this.pushAudioHint();
     });
@@ -774,34 +812,20 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     this.es.onerror = () => {
       this.ui(() => {
         this.sseAlive = false;
-        this.profileBadge = 'Reconectando…';
+        this.profileBadge = 'SSE error…';
         this.applyIdentityVisuals('ONLINE', 'SSE');
       });
 
       this.tipsSrv.sseDown();
       this.pushAudioHint();
 
-      this.es?.close();
+      // ✅ cierre y reconexión con backoff
+      try {
+        this.es?.close();
+      } catch {}
       this.es = undefined;
 
-      this.tOnline = setInterval(async () => {
-        const res = await this.api.apiFetch<{ page?: string; online: number }>(online, this.visitorId);
-        if (!res) return;
-
-        this.syncVisitorId((res as any).visitorId);
-        const dd = (res as any).data ?? null;
-        if (!dd) return;
-
-        this.ui(() => {
-          this.onlineNow = Number(dd.online ?? 0);
-          this.applyIdentityVisuals('ONLINE', 'SSE');
-        });
-
-        void this.audioSrv.sfx('ONLINE_PULSE', { strength: Math.min(1, 0.25 + this.onlineNow / 50) });
-        this.pushAudioHint();
-      }, 12_000);
-
-      setTimeout(() => this.startRealtimeSse(), 1500);
+      this.scheduleSseReconnect('error');
     };
   }
 
