@@ -242,7 +242,6 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
       this.fx.start();
     }
 
-    // ✅ Solo desbloqueo para SFX
     this.audioSrv.installAutoKick(async () => {
       await this.audioSrv.sfx('APP_READY');
       this.ui();
@@ -362,11 +361,29 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
   toggleMusic() {
     this.audioSrv.toggle();
     this.persistPrefs();
+
+    // ✅ Si el usuario cambió a ON o AUTO, intente desbloquear en ese gesto.
+    if (this.audioSrv.state !== 'OFF') {
+      void this.startMusic({ userIntent: true });
+      return;
+    }
+
     this.ui();
   }
 
   async startMusic(_meta?: { userIntent?: boolean }) {
+    const ok = await this.audioSrv.boot();
+    if (!ok) {
+      // ✅ Si el navegador no soporta AudioContext o no permite resume, muestre banner
+      this.audioSrv.showBanner = true;
+      this.ui();
+      return;
+    }
+
+    // ✅ Ya desbloqueado: quite banner y suene confirmación
+    this.audioSrv.showBanner = false;
     await this.audioSrv.sfx('APP_READY');
+
     this.persistPrefs();
     this.ui();
   }
@@ -533,7 +550,9 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
   }
 
   private async sendEvent(typeRaw: string) {
-    const type = String(typeRaw ?? '').trim().toUpperCase();
+    const type = String(typeRaw ?? '')
+      .trim()
+      .toUpperCase();
     if (!this.isValidType(type)) return;
 
     const res = await this.api.sendEvent<VisitProfileResponse>(this.PAGE_KEY, {
@@ -587,7 +606,8 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
 
   /* ===================== trackBy ===================== */
 
-  trackByKpi = (_: number, k: { label: string; kind?: 'online' }) => `${k.kind ?? 'kpi'}:${k.label}`;
+  trackByKpi = (_: number, k: { label: string; kind?: 'online' }) =>
+    `${k.kind ?? 'kpi'}:${k.label}`;
   trackByAction = (_: number, a: { label: string }) => a.label;
   trackByHour = (_: number, h: { key: string }) => h.key;
   trackByStep = (i: number, s: string) => `${i}:${s}`;
@@ -615,7 +635,10 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
         : '—';
 
     const actions = (ins?.actionCountsLast7 ?? []).slice(0, 5);
-    this.actionRows = actions.map((a: any) => ({ label: nice(a.key), value: Number(a.value || 0) }));
+    this.actionRows = actions.map((a: any) => ({
+      label: nice(a.key),
+      value: Number(a.value || 0),
+    }));
 
     const hours = (ins?.peakHoursLast7 ?? []).slice(0, 5);
     this.hourRows = hours.map((h: any) => ({
@@ -668,7 +691,10 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
   }
 
   private async pollOnlineOnce(onlineUrl: string) {
-    const res = await this.api.apiFetch<{ page?: string; online: number }>(onlineUrl, this.visitorId);
+    const res = await this.api.apiFetch<{ page?: string; online: number }>(
+      onlineUrl,
+      this.visitorId
+    );
     if (!res) return;
 
     this.syncVisitorId(res.visitorId);
@@ -702,7 +728,9 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     this.tOnlinePoll = setInterval(() => void this.pollOnlineOnce(online), 12_000);
     void this.pollOnlineOnce(online);
 
-    const openSse = (this.api as any).openSse?.bind(this.api) as ((url: string) => EventSource) | undefined;
+    const openSse = (this.api as any).openSse?.bind(this.api) as
+      | ((url: string) => EventSource)
+      | undefined;
     this.es = openSse ? openSse(stream) : new EventSource(stream);
 
     const parse = (e: MessageEvent) => {

@@ -34,9 +34,17 @@ export class AudioService {
   private limiter?: DynamicsCompressorNode;
 
   private unlocked = false;
-  private lastHint: SysSfxHint = { sseAlive: false, onlineNow: 0, mode: 'NORMAL', focusScore: 0.6, stressScore: 0.35 };
+  private booting = false;
 
-  /** Instala el gesto para desbloquear audio. */
+  private lastHint: SysSfxHint = {
+    sseAlive: false,
+    onlineNow: 0,
+    mode: 'NORMAL',
+    focusScore: 0.6,
+    stressScore: 0.35,
+  };
+
+  /** Instala el gesto para desbloquear audio (Chrome/Safari/iOS). */
   installAutoKick(onKick?: () => void | Promise<void>) {
     const kick = async () => {
       const ok = await this.boot();
@@ -46,39 +54,97 @@ export class AudioService {
       }
       this.showBanner = false;
       await onKick?.();
+
       window.removeEventListener('pointerdown', kick);
       window.removeEventListener('keydown', kick);
+      window.removeEventListener('touchstart', kick);
     };
+
     window.addEventListener('pointerdown', kick, { passive: true });
+    window.addEventListener('touchstart', kick, { passive: true });
     window.addEventListener('keydown', kick);
   }
 
+  /**
+   * Boot idempotente:
+   * - Reusa AudioContext si ya existe
+   * - Resume si está suspended
+   * - Marca unlocked SOLO si queda running
+   * - Hace un “ping” inaudible para Safari
+   */
   async boot(): Promise<boolean> {
-    if (this.unlocked && this.ctx) return true;
+    if (this.unlocked && this.ctx?.state === 'running') return true;
+    if (this.booting) return this.unlocked;
 
-    const Ctx = (window.AudioContext || (window as any).webkitAudioContext) as typeof AudioContext | undefined;
-    if (!Ctx) return false;
+    this.booting = true;
+    try {
+      const Ctx = (window.AudioContext || (window as any).webkitAudioContext) as typeof AudioContext | undefined;
+      if (!Ctx) {
+        this.unlocked = false;
+        this.showBanner = true;
+        return false;
+      }
 
-    this.ctx = new Ctx();
-    if (this.ctx.state === 'suspended') await this.ctx.resume();
+      // Reuse si existe
+      if (!this.ctx) this.ctx = new Ctx();
 
-    // master
-    this.master = this.ctx.createGain();
-    this.master.gain.value = 0.7;
+      // Intentar resume
+      if (this.ctx.state === 'suspended') {
+        try { await this.ctx.resume(); } catch {}
+      }
 
-    // limiter suave
-    this.limiter = this.ctx.createDynamicsCompressor();
-    this.limiter.threshold.value = -14;
-    this.limiter.knee.value = 20;
-    this.limiter.ratio.value = 8;
-    this.limiter.attack.value = 0.003;
-    this.limiter.release.value = 0.12;
+      // Si aún no corre, no “fingir” unlocked
+      if (this.ctx.state !== 'running') {
+        this.unlocked = false;
+        this.showBanner = true;
+        return false;
+      }
 
-    this.master.connect(this.limiter);
-    this.limiter.connect(this.ctx.destination);
+      // Crear grafo solo una vez
+      if (!this.master) {
+        this.master = this.ctx.createGain();
+        this.master.gain.value = 0.7;
 
-    this.unlocked = true;
-    return true;
+        this.limiter = this.ctx.createDynamicsCompressor();
+        this.limiter.threshold.value = -14;
+        this.limiter.knee.value = 20;
+        this.limiter.ratio.value = 8;
+        this.limiter.attack.value = 0.003;
+        this.limiter.release.value = 0.12;
+
+        this.master.connect(this.limiter);
+        this.limiter.connect(this.ctx.destination);
+      }
+
+      // Ping inaudible (ayuda en Safari/iOS a “asentar” el pipeline)
+      this.ping();
+
+      this.unlocked = true;
+      this.showBanner = false;
+      return true;
+    } finally {
+      this.booting = false;
+    }
+  }
+
+  private ping() {
+    if (!this.ctx || !this.master) return;
+
+    const now = this.ctx.currentTime;
+    const o = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+
+    o.type = 'sine';
+    o.frequency.setValueAtTime(220, now);
+    g.gain.setValueAtTime(0.0001, now);
+    g.gain.exponentialRampToValueAtTime(0.00012, now + 0.005);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + 0.03);
+
+    o.connect(g);
+    g.connect(this.master);
+
+    o.start(now);
+    o.stop(now + 0.035);
   }
 
   destroy(): void {
@@ -87,6 +153,8 @@ export class AudioService {
     this.master = undefined;
     this.limiter = undefined;
     this.unlocked = false;
+    this.showBanner = false;
+    this.booting = false;
   }
 
   setHint(h: SysSfxHint) {
@@ -106,26 +174,25 @@ export class AudioService {
     this.state = 'OFF';
   }
 
-  /** Llamada única: reproduce un SFX corto para un evento del sistema */
+  /**
+   * Llamada única: reproduce un SFX corto para un evento del sistema.
+   * ✅ Fix clave: en AUTO NO se retorna antes de boot(); se intenta boot y si falla se activa banner.
+   */
   async sfx(ev: SysSfxEvent, meta?: { strength?: number }): Promise<void> {
     if (this.state === 'OFF') return;
-
-    // AUTO: si no está desbloqueado, no intente sonar (evita spam/errores)
-    if (this.state === 'AUTO' && !this.unlocked) return;
 
     const ok = await this.boot();
     if (!ok || !this.ctx || !this.master) return;
 
+    // Si está en AUTO, y el browser permite (unlocked), suena; si no, ya retornó arriba.
     const now = this.ctx.currentTime;
     const stress = clamp01(this.lastHint.stressScore ?? 0.35);
     const focus = clamp01(this.lastHint.focusScore ?? 0.6);
 
-    // volumen base adaptativo: más estrés => menos agresivo
     const base = 0.16 + (1 - stress) * 0.08; // 0.16..0.24
     const strength = clamp01(meta?.strength ?? 0.8);
     const amp = base * (0.55 + 0.75 * strength) * (0.85 + 0.25 * focus);
 
-    // router por evento
     switch (ev) {
       case 'APP_READY':      return this.beep(now, 440, 0.045, amp * 0.75, 'triangle');
       case 'TOPIC_CHANGE':   return this.chirp(now, 520, 780, 0.09, amp, 'sine');
@@ -199,7 +266,6 @@ export class AudioService {
   }
 
   private tick(t: number, amp: number) {
-    // click suave con ruido filtrado
     if (!this.ctx || !this.master) return Promise.resolve();
 
     const len = Math.floor(this.ctx.sampleRate * 0.03);
@@ -227,14 +293,12 @@ export class AudioService {
   }
 
   private sparkle(t: number, amp: number) {
-    // 3 chirps rápidos tipo “nivel arriba”
     this.chirp(t, 700, 1200, 0.06, amp * 0.85, 'sine');
     this.chirp(t + 0.07, 900, 1600, 0.07, amp * 0.95, 'sine');
     return this.chirp(t + 0.155, 1200, 2200, 0.09, amp, 'sine');
   }
 
   private buzz(t: number, amp: number) {
-    // error discreto: seno + square bajando
     if (!this.ctx || !this.master) return Promise.resolve();
 
     const o1 = this.ctx.createOscillator();

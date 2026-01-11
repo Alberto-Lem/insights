@@ -103,7 +103,11 @@
 
       <!-- Col 3: Audio -->
       <div class="quick" aria-label="Control de audio">
-        <button class="miniBtn ghost" type="button" (click)="toggleMusic()">
+        <button
+          class="miniBtn ghost"
+          type="button"
+          (click)="musicState === 'OFF' ? toggleMusic() : startMusic({ userIntent: true })"
+        >
           {{ musicLabel }}
         </button>
       </div>
