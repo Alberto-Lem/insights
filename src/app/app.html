@@ -1,0 +1,328 @@
+<!-- src/app/app.html -->
+<canvas #fxCanvas id="fxCanvas" aria-hidden="true"></canvas>
+
+<div class="wrap">
+  <article class="card">
+    <!-- =========================
+         TOP HEADER: Brand + KPIs (únicos)
+         ========================= -->
+    <header class="top" role="banner">
+      <div class="brand">
+        <div class="brandRow">
+          <b class="brandTitle">SystemBlacklem · Tips</b>
+        </div>
+
+        <span class="brandSubtitle">Micro-conocimiento accionable en 15 segundos</span>
+
+        <small class="subline">
+          Progreso persistente ·
+          <span class="subHint">Sugerencias adaptativas según tu actividad</span>
+        </small>
+      </div>
+
+      <div class="stats" aria-label="Métricas globales">
+        <div
+          class="pill"
+          *ngFor="let k of headerKpis; trackBy: trackByKpi"
+          [class.isOn]="k.kind === 'online' && onlineNow > 0"
+        >
+          <!-- ✅ ONLINE: el punto palpitante reemplaza al icono -->
+          <ng-container *ngIf="k.kind === 'online'; else normalKpi">
+            <span class="pulseDot" aria-hidden="true"></span>
+            <span class="pillLbl">{{ k.label }}</span>
+            <b class="pillVal">{{ k.value }}</b>
+          </ng-container>
+
+          <!-- ✅ NORMAL: icono + label + valor -->
+          <ng-template #normalKpi>
+            <span class="pillIco" *ngIf="k.icon" aria-hidden="true">{{ k.icon }}</span>
+            <span class="pillLbl">{{ k.label }}</span>
+            <b class="pillVal">{{ k.value }}</b>
+          </ng-template>
+        </div>
+      </div>
+    </header>
+
+    <!-- =========================
+         SUBHEADER:
+         ========================= -->
+    <section class="subTop" aria-label="Identidad y controles">
+      <!-- Col 1: Perfil -->
+      <div class="profile" [attr.title]="visitorIdFull || 'Identificador del visitante'">
+        <div
+          class="avatar"
+          [style.background]="avatarBg"
+          [style.borderColor]="avatarRing"
+          aria-hidden="true"
+        >
+          <span class="sigil">{{ cardSigil }}</span>
+        </div>
+
+        <div class="pText">
+          <div class="pRow">
+            <span class="pBadge">{{ profileBadge || 'Perfil público' }}</span>
+          </div>
+
+          <div class="pMeta">
+            <span class="pTag">ID</span>
+            <span class="pId">{{ visitorAlias || visitorIdShort }}</span>
+          </div>
+        </div>
+
+        <div class="pActions" aria-label="Acciones de perfil">
+          <button type="button" class="miniBtn" (click)="copyVisitorId()">Copiar ID</button>
+        </div>
+      </div>
+
+      <!-- Col 2: Estado del sistema (centrado, con autoridad) -->
+      <section
+        class="sysBar"
+        [class.ok]="sseAlive"
+        [class.warn]="!sseAlive"
+        aria-live="polite"
+        role="status"
+      >
+        <span class="sysDot" aria-hidden="true"></span>
+
+        <div class="sysBody">
+          <div class="sysTopRow">
+            <span class="sysChip" [class.ok]="sseAlive" [class.warn]="!sseAlive">
+              {{ sseAlive ? 'Conectado' : 'Reconectando' }}
+            </span>
+
+            <span class="sysChip soft">
+              Modo: <b>{{ decisionLabel }}</b>
+            </span>
+          </div>
+
+          <div class="sysMsg">
+            {{ decision.systemMessage || (sseAlive ? 'Sistema activo.' : 'Reconectando…') }}
+          </div>
+        </div>
+      </section>
+
+      <!-- Col 3: Audio -->
+      <div class="quick" aria-label="Control de audio">
+        <button class="miniBtn ghost" type="button" (click)="toggleMusic()">
+          {{ musicLabel }}
+        </button>
+      </div>
+    </section>
+
+    <!-- =========================
+         MAIN GRID
+         ========================= -->
+    <main class="grid">
+      <!-- LEFT: Tip -->
+      <section class="panel content" aria-labelledby="tipTitle">
+        <!-- Chips -->
+        <nav class="chips" role="tablist" aria-label="Seleccionar tema">
+          <button
+            class="chip"
+            type="button"
+            [class.active]="topic === 'seguridad'"
+            (click)="setTopic('seguridad')"
+            [attr.aria-pressed]="topic === 'seguridad'"
+          >
+            🛡️ Seguridad
+          </button>
+
+          <button
+            class="chip"
+            type="button"
+            [class.active]="topic === 'estudio'"
+            (click)="setTopic('estudio')"
+            [attr.aria-pressed]="topic === 'estudio'"
+          >
+            📚 Estudio
+          </button>
+
+          <button
+            class="chip"
+            type="button"
+            [class.active]="topic === 'productividad'"
+            (click)="setTopic('productividad')"
+            [attr.aria-pressed]="topic === 'productividad'"
+          >
+            ⚡ Productividad
+          </button>
+
+          <button
+            class="chip"
+            type="button"
+            [class.active]="topic === 'bienestar'"
+            (click)="setTopic('bienestar')"
+            [attr.aria-pressed]="topic === 'bienestar'"
+          >
+            🧘 Bienestar
+          </button>
+        </nav>
+
+        <!-- Hint -->
+        <div class="hint" *ngIf="hint">
+          <span class="hintDot" aria-hidden="true"></span>
+          <span class="hintTxt">{{ hint }}</span>
+        </div>
+
+        <!-- Tip Title -->
+        <h2 class="tipTitle" id="tipTitle">
+          {{ currentTip?.title || 'Cargando conocimiento…' }}
+        </h2>
+
+        <!-- Steps -->
+        <ul class="tipSteps" *ngIf="currentTip?.steps?.length; else emptySteps">
+          <li
+            *ngFor="let s of currentTip?.steps || []; let i = index; trackBy: trackByStep"
+            class="step"
+          >
+            <span class="n">{{ i + 1 }}</span>
+            <span class="txt">{{ s }}</span>
+          </li>
+        </ul>
+
+        <ng-template #emptySteps>
+          <div class="empty">
+            <span class="emptyDot" aria-hidden="true"></span>
+            <span>Sin pasos aún. Cambie el tema o pida un nuevo tip.</span>
+          </div>
+        </ng-template>
+
+        <!-- Actions -->
+        <div class="actions">
+          <button
+            class="btn primary"
+            type="button"
+            (click)="onNewTip()"
+            [disabled]="!canNewTip"
+            [attr.aria-disabled]="!canNewTip"
+          >
+            🔄 Nuevo
+          </button>
+
+          <button class="btn" type="button" (click)="onCopy()">📋 Copiar</button>
+
+          <button
+            class="btn"
+            type="button"
+            (click)="onShare()"
+            [disabled]="!canShare"
+            [attr.aria-disabled]="!canShare"
+          >
+            📲 Compartir
+          </button>
+        </div>
+
+        <!-- Audio Banner -->
+        <div class="audioBanner" *ngIf="showAudioBanner" role="note" aria-live="polite">
+          <div class="audioLeft">
+            <b>Audio bloqueado</b>
+            <span>El navegador requiere interacción para habilitar sonido.</span>
+          </div>
+          <div class="audioBtns">
+            <button class="btn" type="button" (click)="startMusic({ userIntent: true })">
+              Habilitar
+            </button>
+            <button class="btn ghost" type="button" (click)="stopMusic()">Omitir</button>
+          </div>
+        </div>
+
+        <!-- Bottom summary -->
+        <div class="contentBottom">
+          <div class="bottomGrid">
+            <div class="bottomCard">
+              <p class="bottomTitle">Meta rápida</p>
+              <div class="bottomRow">
+                <span>Complete 3 tips hoy</span>
+                <b>{{ progress.pct }}%</b>
+              </div>
+            </div>
+
+            <div class="bottomCard">
+              <p class="bottomTitle">Resumen</p>
+              <div class="bottomRow">
+                <span>Historial local</span>
+                <b>{{ historyCount }}</b>
+              </div>
+              <div class="bottomRow muted">
+                <span>Días activos (7)</span>
+                <b>{{ insights?.activeDaysLast7 ?? '—' }}</b>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- RIGHT: Progreso + Insights -->
+      <aside class="panel side" aria-label="Progreso e Insights">
+        <section class="sideBlock">
+          <h3>Progreso</h3>
+
+          <div class="meter">
+            <div class="meterTop">
+              <span>XP</span>
+              <span
+                ><b>{{ progress.x }}</b> / {{ progress.nextGoal }}</span
+              >
+            </div>
+
+            <div class="bar"><i [style.width.%]="progress.pct"></i></div>
+
+            <div class="meterFoot">
+              <span
+                >Faltan <b>{{ progress.left }}</b> XP</span
+              >
+              <span
+                >Próx. nivel <b>{{ progress.nextLevel }}</b></span
+              >
+            </div>
+          </div>
+        </section>
+
+        <div class="sep"></div>
+
+        <section class="sideBlock">
+          <h3>Insights · 7 días</h3>
+
+          <div class="tagRow">
+            <div class="tag">
+              ⏳ <small>{{ peakHourLabel }}</small>
+              <span class="tagSub">Hora pico</span>
+            </div>
+
+            <div class="tag">
+              🔥 <small>{{ topActionLabel }}</small>
+              <span class="tagSub">Acción dominante</span>
+            </div>
+
+            <div class="tag ok">
+              ✅ <small>{{ healthHint }}</small>
+              <span class="tagSub">Balance</span>
+            </div>
+          </div>
+
+          <ul class="list">
+            <li *ngFor="let a of actionRows; trackBy: trackByAction">
+              <span>{{ a.label }}</span
+              ><b>{{ a.value }}</b>
+            </li>
+            <li *ngIf="actionRows.length === 0"><span>Sin acciones</span><b>—</b></li>
+          </ul>
+
+          <details class="details" *ngIf="hourRows.length > 0">
+            <summary>Ver distribución por hora</summary>
+            <ul class="list">
+              <li *ngFor="let h of hourRows; trackBy: trackByHour">
+                <span>{{ h.key }}</span
+                ><b>{{ h.value }}</b>
+              </li>
+            </ul>
+          </details>
+        </section>
+      </aside>
+    </main>
+  </article>
+</div>
+
+<div class="toast" role="status" aria-live="polite" [class.show]="toastVisible">
+  {{ toastMsg }}
+</div>
