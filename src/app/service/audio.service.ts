@@ -17,15 +17,16 @@ export type SysSfxHint = {
   sseAlive?: boolean;
   onlineNow?: number;
   mode?: 'NORMAL' | 'REDUCED' | 'REST' | 'FOCUS' | string;
-  focusScore?: number;   // 0..1
-  stressScore?: number;  // 0..1
+  focusScore?: number; // 0..1
+  stressScore?: number; // 0..1
+  audioIntensity?: number; // ✅ 0..1 (control global de intensidad/energía del audio)
 };
 
 const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
 
 @Injectable({ providedIn: 'root' })
 export class AudioService {
-  // UI state (persistes en StorageService)
+  // Persistir en StorageService desde App (como ya haces)
   state: 'ON' | 'OFF' | 'AUTO' = 'AUTO';
 
   private ctx?: AudioContext;
@@ -43,11 +44,13 @@ export class AudioService {
     stressScore: 0.35,
   };
 
-  // ✅ callback para que App muestre TOAST (no banner)
+  // Notificación (toast) controlada por App
   private onBlocked?: (msg: string) => void;
   private lastBlockedToastAt = 0;
 
-  /** App registra aquí la forma de notificar (toast). */
+  // ✅ Nuevo: si se intentó usar audio sin gesto, marcamos “pendiente”
+  private pendingUnlock = false;
+
   setBlockedHandler(fn?: (msg: string) => void) {
     this.onBlocked = fn;
   }
@@ -56,8 +59,14 @@ export class AudioService {
     this.lastHint = {
       ...this.lastHint,
       ...h,
-      focusScore: typeof h.focusScore === 'number' ? clamp01(h.focusScore) : this.lastHint.focusScore,
-      stressScore: typeof h.stressScore === 'number' ? clamp01(h.stressScore) : this.lastHint.stressScore,
+      focusScore:
+        typeof h.focusScore === 'number' ? clamp01(h.focusScore) : this.lastHint.focusScore,
+      stressScore:
+        typeof h.stressScore === 'number' ? clamp01(h.stressScore) : this.lastHint.stressScore,
+      audioIntensity:
+        typeof h.audioIntensity === 'number'
+          ? clamp01(h.audioIntensity)
+          : this.lastHint.audioIntensity,
     };
   }
 
@@ -69,16 +78,26 @@ export class AudioService {
     this.state = 'OFF';
   }
 
-  /** ✅ Llamar SIEMPRE desde un click/tap real (buttons). */
+  /** ✅ App debe llamarlo SOLO desde gesto real: click/tap/keydown */
   async userKick(): Promise<boolean> {
     if (this.state === 'OFF') return false;
-    const ok = await this.boot();
+
+    const ok = await this.bootFromGesture();
     if (!ok) this.notifyBlocked();
+
+    // Si se desbloqueó y estaba pendiente, limpiar bandera
+    if (ok) this.pendingUnlock = false;
+
     return ok;
   }
 
-  /** Boot idempotente: crea/reusa y resume, pero SOLO “unlocked” si queda running. */
-  private async boot(): Promise<boolean> {
+  /** ✅ Para que App muestre un hint si el usuario nunca tocó la pantalla */
+  needsUserGesture(): boolean {
+    return this.state !== 'OFF' && !this.unlocked && this.pendingUnlock;
+  }
+
+  /** Boot SOLO cuando hay gesto real */
+  private async bootFromGesture(): Promise<boolean> {
     if (this.unlocked && this.ctx?.state === 'running') return true;
     if (this.booting) return this.unlocked;
 
@@ -95,9 +114,14 @@ export class AudioService {
 
       if (!this.ctx) this.ctx = new Ctx();
 
-      // intentar resume
+      // Resume: solo funciona con gesto
       if (this.ctx.state === 'suspended') {
-        try { await this.ctx.resume(); } catch {}
+        try {
+          await this.ctx.resume();
+        } catch {
+          this.unlocked = false;
+          return false;
+        }
       }
 
       if (this.ctx.state !== 'running') {
@@ -105,7 +129,6 @@ export class AudioService {
         return false;
       }
 
-      // grafo una sola vez
       if (!this.master) {
         this.master = this.ctx.createGain();
         this.master.gain.value = 0.7;
@@ -160,30 +183,37 @@ export class AudioService {
   }
 
   destroy(): void {
-    try { this.ctx?.close(); } catch {}
+    try {
+      this.ctx?.close();
+    } catch {}
     this.ctx = undefined;
     this.master = undefined;
     this.limiter = undefined;
     this.unlocked = false;
     this.booting = false;
     this.onBlocked = undefined;
+    this.pendingUnlock = false;
   }
 
-  /** SFX: si está bloqueado, NO rompe; solo notifica (toast) y sale. */
+  /**
+   * ✅ SFX sin romper:
+   * - OFF: nada
+   * - AUTO: si no está desbloqueado, no intenta boot; solo marca pending + toast (controlado)
+   * - ON: si no está desbloqueado, también exige gesto (pending)
+   */
   async sfx(ev: SysSfxEvent, meta?: { strength?: number }): Promise<void> {
     if (this.state === 'OFF') return;
 
-    // AUTO: no intente “forzar” si aún no está desbloqueado
-    if (this.state === 'AUTO' && !this.unlocked) {
+    // No hay unlock => NO intente crear/resumir aquí (evita warning del navegador)
+    if (!this.unlocked || this.ctx?.state !== 'running') {
+      this.pendingUnlock = true;
+
+      // AUTO: no insistir; ON: igual requiere gesto
       this.notifyBlocked();
       return;
     }
 
-    const ok = await this.boot();
-    if (!ok || !this.ctx || !this.master) {
-      this.notifyBlocked();
-      return;
-    }
+    if (!this.ctx || !this.master) return;
 
     const now = this.ctx.currentTime;
     const stress = clamp01(this.lastHint.stressScore ?? 0.35);
@@ -194,17 +224,28 @@ export class AudioService {
     const amp = base * (0.55 + 0.75 * strength) * (0.85 + 0.25 * focus);
 
     switch (ev) {
-      case 'APP_READY':      return this.beep(now, 440, 0.045, amp * 0.75, 'triangle');
-      case 'TOPIC_CHANGE':   return this.chirp(now, 520, 780, 0.09, amp, 'sine');
-      case 'NEW_TIP':        return this.doubleBeep(now, 660, 880, amp * 0.95);
-      case 'COPY':           return this.tick(now, amp * 0.75);
-      case 'SHARE':          return this.triple(now, 740, 920, 1100, amp);
-      case 'ONLINE_PULSE':   return this.beep(now, 540, 0.03, amp * 0.45, 'sine');
-      case 'SSE_UP':         return this.rise(now, 420, 980, 0.12, amp * 0.95);
-      case 'SSE_DOWN':       return this.fall(now, 740, 260, 0.14, amp * 0.9);
-      case 'STREAK_UP':      return this.rise(now, 520, 1240, 0.18, amp);
-      case 'LEVEL_UP':       return this.sparkle(now, amp * 1.05);
-      case 'ERROR':          return this.buzz(now, amp * 0.85);
+      case 'APP_READY':
+        return this.beep(now, 440, 0.045, amp * 0.75, 'triangle');
+      case 'TOPIC_CHANGE':
+        return this.chirp(now, 520, 780, 0.09, amp, 'sine');
+      case 'NEW_TIP':
+        return this.doubleBeep(now, 660, 880, amp * 0.95);
+      case 'COPY':
+        return this.tick(now, amp * 0.75);
+      case 'SHARE':
+        return this.triple(now, 740, 920, 1100, amp);
+      case 'ONLINE_PULSE':
+        return this.beep(now, 540, 0.03, amp * 0.45, 'sine');
+      case 'SSE_UP':
+        return this.rise(now, 420, 980, 0.12, amp * 0.95);
+      case 'SSE_DOWN':
+        return this.fall(now, 740, 260, 0.14, amp * 0.9);
+      case 'STREAK_UP':
+        return this.rise(now, 520, 1240, 0.18, amp);
+      case 'LEVEL_UP':
+        return this.sparkle(now, amp * 1.05);
+      case 'ERROR':
+        return this.buzz(now, amp * 0.85);
     }
   }
 
@@ -231,7 +272,14 @@ export class AudioService {
     return Promise.resolve();
   }
 
-  private chirp(t: number, hz0: number, hz1: number, dur: number, amp: number, type: OscillatorType) {
+  private chirp(
+    t: number,
+    hz0: number,
+    hz1: number,
+    dur: number,
+    amp: number,
+    type: OscillatorType
+  ) {
     if (!this.ctx || !this.master) return Promise.resolve();
     const o = this.ctx.createOscillator();
     const g = this.ctx.createGain();
@@ -320,8 +368,10 @@ export class AudioService {
     o2.connect(g);
     g.connect(this.master);
 
-    o1.start(t); o2.start(t);
-    o1.stop(t + 0.18); o2.stop(t + 0.18);
+    o1.start(t);
+    o2.start(t);
+    o1.stop(t + 0.18);
+    o2.stop(t + 0.18);
 
     return Promise.resolve();
   }

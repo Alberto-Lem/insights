@@ -21,30 +21,23 @@ import { VisitsApiService } from './service/visits-api.service';
 import { CanvasFxService } from './service/canvas-fx.service';
 import { MindService } from './service/mind.service';
 import { AudioService } from './service/audio.service';
+import { OfflineSyncService } from './service/offline-sync.service';
+import { ConnectivityService } from './service/connectivity.service';
+import { SseService, VisitDecisionResponse } from './service/sse.service';
 
 import { Tip, Topic, VisitInsightsResponse, VisitProfileResponse } from './models/models';
 import { getRefFromUrl } from './utils/utils';
 import { BumpKind, bumpToState, computeCardVisuals } from './ui/card-visuals';
 
-type TipWithId = Tip & { id?: string };
-
-type DecisionMode = 'NORMAL' | 'REDUCED' | 'REST' | 'FOCUS';
+type TipWithId = Tip & { id?: string; _id?: string };
 type VisitEventType = 'NEW_TIP' | 'COPY_TIP' | 'SHARE_TIP' | 'TOPIC';
-
-type VisitDecisionResponse = {
-  mode: DecisionMode;
-  maxTipsAllowed: number;
-  allowShare: boolean;
-  allowNewTip: boolean;
-  systemMessage: string;
-};
 
 const DEFAULT_DECISION: VisitDecisionResponse = {
   mode: 'NORMAL',
   maxTipsAllowed: 999,
   allowShare: true,
   allowNewTip: true,
-  systemMessage: 'Sistema listo.',
+  systemMessage: '',
 };
 
 @Component({
@@ -61,12 +54,15 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
   @HostBinding('class') hostClass = 'appRoot';
   @HostBinding('style.--card-glow') hostGlow = '10';
 
+  private sync = inject(OfflineSyncService);
   private storage = inject(StorageService);
   private tipsSrv = inject(TipsService);
   private api = inject(VisitsApiService);
   private fx = inject(CanvasFxService);
   private mind = inject(MindService);
   private audioSrv = inject(AudioService);
+  private net = inject(ConnectivityService);
+  private sse = inject(SseService);
 
   private zone = inject(NgZone);
   private cdr = inject(ChangeDetectorRef);
@@ -102,19 +98,23 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
   onlineNow = 0;
   sseAlive = false;
 
-  private es?: EventSource;
-  private lastSseTs = 0;
-
   private visitorId = '';
   private ref = 'direct';
 
-  private tTrack?: ReturnType<typeof setInterval>;
+  private tMe?: ReturnType<typeof setInterval>;
   private tInsights?: ReturnType<typeof setInterval>;
-  private tOnlinePoll?: ReturnType<typeof setInterval>;
-  private tSseWatch?: ReturnType<typeof setInterval>;
   private tTotal?: ReturnType<typeof setInterval>;
+  private tFlush?: ReturnType<typeof setInterval>;
+
+  private tBumpReset?: ReturnType<typeof setTimeout>;
 
   private mindSub?: Subscription;
+  private sseSub?: Subscription;
+  private sseOnlineSub?: Subscription;
+  private sseProfileSub?: Subscription;
+  private sseInsightsSub?: Subscription;
+  private sseDecisionSub?: Subscription;
+  private sseTotalSub?: Subscription;
 
   visitorAlias = 'SB-ANON';
   profileLabel = 'Visitor';
@@ -128,14 +128,11 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
   cardSigil = '◎';
   cardState: 'IDLE' | 'LISTEN' | 'THINK' | 'SPEAK' = 'IDLE';
 
-  private avatarSalt = 0;
-
-  // ✅ control de reintentos SSE (backoff)
-  private sseRetry = 0;
-  private tSseRetry?: ReturnType<typeof setTimeout>;
-
-  // ✅ evita warning de vibrate antes del primer gesto real
   private userInteracted = false;
+
+  private readonly TRACK_FLAG_PREFIX = 'sb_tracked_today::';
+
+  /* ===================== View helpers ===================== */
 
   private syncHostClass() {
     const tier = this.cardSkinClass || 'tier-bronze';
@@ -153,16 +150,16 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
   }
 
   get decisionLabel(): string {
-    const m: DecisionMode = this.decision.mode;
+    const m = this.decision?.mode || 'NORMAL';
     return m === 'FOCUS' ? 'FOCUS' : m === 'REST' ? 'REST' : m === 'REDUCED' ? 'REDUCED' : 'NORMAL';
   }
 
   get canNewTip(): boolean {
-    return !!this.decision.allowNewTip;
+    return !!this.decision?.allowNewTip;
   }
 
   get canShare(): boolean {
-    return !!this.decision.allowShare;
+    return !!this.decision?.allowShare;
   }
 
   get totalView(): string {
@@ -188,55 +185,296 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     return v.length > 14 ? `${v.slice(0, 10)}…${v.slice(-4)}` : v || '—';
   }
 
-  async copyVisitorId() {
+  private isSignedVid(v: string): boolean {
+    const s = String(v || '').trim();
+    return !!s && s.includes('.') && s.length > 20;
+  }
+
+  /* ===================== UI actions ===================== */
+
+  async copyVisitorId(): Promise<void> {
     this.userInteracted = true;
+
+    // ✅ Copiar SOLO un identificador público seguro (alias), NO el token firmado
+    const safeId =
+      String(this.visitorAlias || '').trim() || String(this.visitorIdShort || '').trim();
+
+    if (!safeId) {
+      this.toast('Aún no hay ID público disponible.');
+      this.mind.ingest('ERROR', this.topic, false, {
+        where: 'copyVisitorId',
+        reason: 'missing_public_id',
+      });
+      return;
+    }
+
     try {
-      await navigator.clipboard.writeText(this.visitorIdFull);
-      this.toast('✅ ID copiado');
-      this.bumpCardState('COPY_TIP');
+      await navigator.clipboard.writeText(safeId);
+      this.toast('ID público copiado.');
 
-      await this.audioSrv.userKick();
-      void this.audioSrv.sfx('COPY');
-    } catch {
-      this.toast('⚠️ No se pudo copiar');
+      // ✅ Evento correcto (no COPY_TIP)
+      this.mind.ingest('COPY_VISITOR_ID', this.topic, true, {
+        what: 'publicVisitorId',
+        value: safeId,
+      });
+    } catch (e: any) {
+      // Fallback por si clipboard falla (Safari/permiso)
+      try {
+        const ok = this.legacyCopyToClipboard(safeId);
+        if (ok) {
+          this.toast('ID público copiado.');
+          this.mind.ingest('COPY_VISITOR_ID', this.topic, true, {
+            what: 'publicVisitorId',
+            value: safeId,
+            fallback: true,
+          });
+          return;
+        }
+      } catch {}
 
-      await this.audioSrv.userKick();
-      void this.audioSrv.sfx('ERROR');
+      this.toast('No se pudo copiar (permiso del navegador).');
+      this.mind.ingest('ERROR', this.topic, false, {
+        where: 'copyVisitorId',
+        reason: 'clipboard_denied',
+        message: String(e?.message || e),
+      });
     }
   }
 
+  /** Fallback clásico (cuando navigator.clipboard no está disponible o falla). */
+  private legacyCopyToClipboard(text: string): boolean {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', 'true');
+    ta.style.position = 'fixed';
+    ta.style.top = '-1000px';
+    ta.style.left = '-1000px';
+    document.body.appendChild(ta);
+
+    ta.focus();
+    ta.select();
+
+    let ok = false;
+    try {
+      ok = document.execCommand('copy');
+    } finally {
+      document.body.removeChild(ta);
+    }
+    return ok;
+  }
+
+  async toggleMusic(): Promise<void> {
+    this.userInteracted = true;
+
+    const cur = this.audioSrv.state;
+    const next = cur === 'OFF' ? 'ON' : cur === 'ON' ? 'AUTO' : 'OFF';
+    this.audioSrv.state = next;
+
+    const prefs = this.storage.getPrefs();
+    this.storage.setPrefs({ ...prefs, musicState: next });
+
+    // ✅ gesto real: desbloquea audio aquí
+    await this.audioSrv.userKick();
+
+    this.toast(`Audio: ${next}`);
+    this.mind.ingest('SESSION_TICK', this.topic, true, { music: next, seconds: 2 });
+    this.ui();
+  }
+
+  async setTopic(t: Topic): Promise<void> {
+    this.userInteracted = true;
+
+    const next = (t || '').toString().trim() as Topic;
+    if (!next) return;
+
+    this.topic = next;
+    this.tipsSrv.setTopic(next);
+
+    const prefs = this.storage.getPrefs();
+    this.storage.setPrefs({ ...prefs, topic: next });
+
+    // ✅ emitir al backend (cola + envío)
+    await this.emitVisitEvent('TOPIC', { topic: next });
+
+    this.pickNewTip();
+    this.bumpCardState('TOPIC');
+    this.ui();
+  }
+
+  async onNewTip(): Promise<void> {
+    this.userInteracted = true;
+
+    if (!this.canNewTip) {
+      this.toast('Acción limitada por el modo actual.');
+      return;
+    }
+
+    this.pickNewTip();
+    const tipId = this.getTipId(this.currentTip) || null;
+
+    await this.emitVisitEvent('NEW_TIP', {
+      ref: tipId,
+      title: this.currentTip?.title || null,
+    });
+
+    this.bumpCardState('NEW_TIP');
+    this.ui();
+  }
+
+  async onCopy(): Promise<void> {
+    this.userInteracted = true;
+
+    const tip = this.currentTip;
+    if (!tip) {
+      this.toast('No hay tip para copiar.');
+      return;
+    }
+
+    const tipId = this.getTipId(tip) || 'unknown';
+    const text = this.formatTipForCopy(tip);
+
+    try {
+      await navigator.clipboard.writeText(text);
+      this.toast('Tip copiado.');
+
+      // ✅ stats/mind/audio: TipsService es fuente única
+      this.tipsSrv.copyTip(tip as any, true);
+
+      await this.emitVisitEvent('COPY_TIP', { ref: tipId });
+
+      this.bumpCardState('COPY_TIP');
+      this.ui();
+    } catch (e) {
+      this.toast('No se pudo copiar (permiso del navegador).');
+      this.tipsSrv.copyTip(tip as any, false);
+    }
+  }
+  async onShare(): Promise<void> {
+    this.userInteracted = true;
+
+    const tip = this.currentTip;
+    if (!tip) {
+      this.toast('No hay tip para compartir.');
+      return;
+    }
+
+    if (!this.canShare) {
+      this.toast('Acción limitada por el modo actual.');
+      return;
+    }
+
+    const tipId = this.getTipId(tip) || 'unknown';
+    const text = this.formatTipForCopy(tip);
+
+    // ✅ type-guard correcto (evita TS2774)
+    const canNativeShare = typeof (navigator as any)?.share === 'function';
+
+    try {
+      let channel: 'native' | 'clipboard' = 'clipboard';
+
+      if (canNativeShare) {
+        await (navigator as any).share({
+          title: tip.title || 'SystemBlacklem · Tips',
+          text,
+          url: location.href,
+        });
+        channel = 'native';
+        this.toast('Compartido.');
+      } else {
+        await navigator.clipboard.writeText(text);
+        channel = 'clipboard';
+        this.toast('Copiado para compartir.');
+      }
+
+      // ✅ 1 sola fuente para stats/mind/audio
+      this.tipsSrv.shareTip(tip as any, true, channel);
+
+      // ✅ backend aligned
+      await this.emitVisitEvent('SHARE_TIP', { ref: tipId });
+
+      this.bumpCardState('SHARE_TIP');
+      this.ui();
+    } catch (e) {
+      this.toast('No se pudo compartir.');
+      this.tipsSrv.shareTip(tip as any, false);
+    }
+  }
+
+  /* ===================== Lifecycle ===================== */
+
   ngOnInit(): void {
     this.ref = getRefFromUrl(location.href);
-
-    // ✅ Cuando el browser bloquee audio => TOAST (no banner)
     this.audioSrv.setBlockedHandler((msg) => this.toast(msg));
 
-    // ✅ Fuente única de visitorId: Storage
-    this.visitorId = this.storage.getVisitorId();
+    this.visitorId = String(this.storage.getVisitorId(this.PAGE_KEY) || '').trim();
     this.buildProfileUI(this.visitorId);
 
     const prefs = this.storage.getPrefs();
     this.topic = (prefs.topic ?? 'seguridad') as Topic;
     this.historyCount = this.storage.getTipHistoryIds().length;
 
-    // restaurar estado audio si existe
     const ms = (prefs as any)?.musicState;
     if (ms === 'ON' || ms === 'OFF' || ms === 'AUTO') this.audioSrv.state = ms;
 
-    // ✅ Suscripción mente: controla FX + hint
     this.mindSub = this.mind.observe().subscribe((state) => {
       this.fx.setMode(this.mind.getFxMode(state.mood));
       this.hint = this.mind.getToneLine(state, this.topic);
-
-      if (!this.profileBadge || this.profileBadge === 'Perfil público') {
-        this.profileBadge = 'Sistema activo';
-      }
-
       this.pushAudioHint();
       this.ui();
     });
 
-    // ✅ Topic inicial
+    // SSE estado
+    this.sseSub = this.sse.alive$.subscribe((alive) => {
+      this.sseAlive = alive;
+      if (alive) this.tipsSrv.sseUp();
+      else this.tipsSrv.sseDown();
+
+      this.applyIdentityVisuals('ONLINE', 'SSE');
+      this.pushAudioHint();
+      this.ui();
+    });
+
+    this.sseOnlineSub = this.sse.onlineNow$.subscribe((n) => {
+      this.onlineNow = Number(n || 0);
+      this.applyIdentityVisuals('ONLINE', 'SSE');
+      this.pushAudioHint();
+      this.ui();
+    });
+
+    // ✅ NUEVO: streams de backend (profile/insights/decision/total)
+    this.sseProfileSub = this.sse.profile$.subscribe((p) => {
+      if (!p) return;
+      const prevLevel = Number((this.profile as any)?.level ?? 0);
+      const prevStreak = Number((this.profile as any)?.streak ?? 0);
+
+      this.profile = p;
+      this.computeProgress(prevLevel, prevStreak);
+      this.applyIdentityVisuals('PROFILE');
+      this.pushAudioHint();
+      this.ui();
+    });
+
+    this.sseInsightsSub = this.sse.insights$.subscribe((ins) => {
+      if (!ins) return;
+      this.insights = ins;
+      this.deriveInsightsUI();
+      this.pushAudioHint();
+      this.ui();
+    });
+
+    this.sseDecisionSub = this.sse.decision$.subscribe((d) => {
+      if (!d) return;
+      this.decision = d;
+      this.pushAudioHint();
+      this.ui();
+    });
+
+    this.sseTotalSub = this.sse.total$.subscribe((t) => {
+      if (typeof t !== 'number') return;
+      this.totalToday = t;
+      this.ui();
+    });
+
     this.tipsSrv.setTopic(this.topic);
     this.pickNewTip();
 
@@ -244,233 +482,246 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     this.ui();
   }
 
-  ngAfterViewInit(): void {
+  async ngAfterViewInit(): Promise<void> {
     if (this.fxCanvas?.nativeElement) {
       this.fx.bind(this.fxCanvas.nativeElement);
       this.fx.start();
     }
 
-    // ✅ NO intentar arrancar AudioContext aquí (no hay gesto del usuario)
-    //    Solo se desbloquea por clicks reales: botones (Nuevo/Copiar/Compartir/Audio)
+    // Handshake único
+    await this.sync.handshakeAndFlush(this.PAGE_KEY);
 
-    void this.loadMe();
-    void this.track();
-    void this.loadTotal();
-    void this.loadInsights(true);
+    this.visitorId = String(this.storage.getVisitorId(this.PAGE_KEY) || '').trim();
+    this.buildProfileUI(this.visitorId);
 
-    this.startRealtimeSse();
-
-    this.tTrack = setInterval(() => void this.track(), 30_000);
-    this.tInsights = setInterval(() => void this.loadInsights(false), 25_000);
-    this.tTotal = setInterval(() => void this.loadTotal(), 20_000);
-
-    // ✅ watchdog: si SSE queda “silencioso”, reconecte con backoff
-    this.tSseWatch = setInterval(() => {
-      if (!this.sseAlive) return;
-      if (Date.now() - this.lastSseTs > 20_000) this.scheduleSseReconnect('watchdog');
-    }, 10_000);
-  }
-
-  ngOnDestroy(): void {
-    this.fx.stop();
-    this.closeSse('destroy');
-
-    this.mindSub?.unsubscribe();
-
-    this.tTrack && clearInterval(this.tTrack);
-    this.tInsights && clearInterval(this.tInsights);
-    this.tOnlinePoll && clearInterval(this.tOnlinePoll);
-    this.tSseWatch && clearInterval(this.tSseWatch);
-    this.tTotal && clearInterval(this.tTotal);
-
-    this.tSseRetry && clearTimeout(this.tSseRetry);
-
-    this.tToast && clearTimeout(this.tToast);
-
-    this.audioSrv.destroy();
-  }
-
-  /* ===================== Actions ===================== */
-
-  async setTopic(t: Topic) {
-    this.userInteracted = true;
-
-    this.topic = t;
-    this.persistPrefs();
-
-    this.tipsSrv.setTopic(t);
-    this.pickNewTip();
-
-    this.bumpCardState('TOPIC');
-    void this.sendEvent('TOPIC');
-
-    // ✅ gesto real: desbloquea + SFX
-    await this.audioSrv.userKick();
-    void this.audioSrv.sfx('TOPIC_CHANGE');
-
-    this.applyIdentityVisuals('ACTION', 'TOPIC');
-    this.pushAudioHint();
-    this.ui();
-  }
-
-  async onNewTip() {
-    this.userInteracted = true;
-
-    if (!this.canNewTip) {
-      this.toast(this.decision.systemMessage || 'Acción limitada por el sistema.');
-
-      await this.audioSrv.userKick();
-      void this.audioSrv.sfx('ERROR');
-      return;
-    }
-
-    this.pickNewTip();
-
-    this.bumpCardState('NEW_TIP');
-    void this.sendEvent('NEW_TIP');
-
-    await this.audioSrv.userKick();
-    void this.audioSrv.sfx('NEW_TIP');
-
-    this.applyIdentityVisuals('ACTION', 'NEW_TIP');
-    this.pushAudioHint();
-    this.ui();
-  }
-
-  async onCopy() {
-    this.userInteracted = true;
-
-    const tip = this.currentTip;
-    const text = tip ? this.tipsSrv.toText(tip) : '';
-    const ok = await this.copyText(text);
-
-    this.toast(ok ? '✅ Copiado al portapapeles' : '⚠️ No se pudo copiar');
-    if (tip) this.tipsSrv.copyTip(tip, ok);
-
-    this.bumpCardState('COPY_TIP');
-    this.applyIdentityVisuals('ACTION', 'COPY_TIP');
-    await this.sendEvent('COPY_TIP');
-
-    await this.audioSrv.userKick();
-    void this.audioSrv.sfx(ok ? 'COPY' : 'ERROR');
-
-    this.pushAudioHint();
-    this.ui();
-  }
-
-  async onShare() {
-    this.userInteracted = true;
-
-    if (!this.canShare) {
-      this.toast(this.decision.systemMessage || 'Compartir está limitado por el sistema.');
-
-      await this.audioSrv.userKick();
-      void this.audioSrv.sfx('ERROR');
-      return;
-    }
-
-    const tip = this.currentTip;
-    const text = tip ? this.tipsSrv.toText(tip) : '';
-
-    const ok = await this.shareNative(text);
-    if (!ok) window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank', 'noopener');
-
-    if (tip) this.tipsSrv.shareTip(tip, ok, ok ? 'native' : 'wa');
-
-    this.bumpCardState('SHARE_TIP');
-    this.applyIdentityVisuals('ACTION', 'SHARE_TIP');
-    await this.sendEvent('SHARE_TIP');
-
-    await this.audioSrv.userKick();
-    void this.audioSrv.sfx(ok ? 'SHARE' : 'ERROR');
-
-    this.pushAudioHint();
-    this.ui();
-  }
-
-  /* ===================== Audio controls ===================== */
-
-  async toggleMusic() {
-    this.userInteracted = true;
-
-    this.audioSrv.toggle();
-    this.persistPrefs();
-
-    // ✅ al activar ON/AUTO, desbloquear en ESTE gesto y dar feedback
-    if (this.audioSrv.state !== 'OFF') {
-      await this.startMusic({ userIntent: true });
-      return;
-    }
-
-    this.ui();
-  }
-
-  async startMusic(_meta?: { userIntent?: boolean }) {
-    this.userInteracted = true;
-
-    const ok = await this.audioSrv.userKick();
-    if (!ok) {
-      // toast lo maneja AudioService mediante setBlockedHandler
-      this.persistPrefs();
+    if (!this.isSignedVid(this.visitorId)) {
+      this.profileBadge = 'Sesión inválida (VID no firmado)';
       this.ui();
       return;
     }
 
-    // confirmación discreta
-    void this.audioSrv.sfx('APP_READY');
+    // Track una vez por día
+    if (!this.wasTrackedToday()) {
+      await this.trackSafe();
+      this.markTrackedToday();
+    }
 
-    this.persistPrefs();
+    // Cargas iniciales (si SSE tarda)
+    await this.loadMeSafe();
+    await this.loadTotalSafe();
+    await this.loadInsightsSafe(true);
+
+    // SSE
+    this.sse.start(this.PAGE_KEY);
+
+    // ✅ Timers reducidos (evita saturar backend)
+    this.tMe = setInterval(() => void this.loadMeSafe(), 55_000);
+    this.tInsights = setInterval(() => void this.loadInsightsSafe(false), 90_000);
+    this.tTotal = setInterval(() => void this.loadTotalSafe(), 60_000);
+    this.tFlush = setInterval(() => void this.sync.handshakeAndFlush(this.PAGE_KEY), 70_000);
+
     this.ui();
   }
 
-  stopMusic() {
-    this.userInteracted = true;
+  ngOnDestroy(): void {
+    this.fx.stop();
+    this.sse.stop();
 
-    this.audioSrv.stop();
-    this.persistPrefs();
+    this.mindSub?.unsubscribe();
+    this.sseSub?.unsubscribe();
+    this.sseOnlineSub?.unsubscribe();
+    this.sseProfileSub?.unsubscribe();
+    this.sseInsightsSub?.unsubscribe();
+    this.sseDecisionSub?.unsubscribe();
+    this.sseTotalSub?.unsubscribe();
 
-    // (Opcional) sin SFX porque el usuario apagó audio
+    this.tMe && clearInterval(this.tMe);
+    this.tInsights && clearInterval(this.tInsights);
+    this.tTotal && clearInterval(this.tTotal);
+    this.tFlush && clearInterval(this.tFlush);
+
+    this.tToast && clearTimeout(this.tToast);
+    this.tBumpReset && clearTimeout(this.tBumpReset);
+
+    this.audioSrv.destroy();
+  }
+
+  /* ===================== API pulls (fallback/compat) ===================== */
+
+  private apiEndpoints() {
+    return this.api.endpoints(this.PAGE_KEY);
+  }
+
+  private syncVisitorId(newVid?: string) {
+    const v = String(newVid || '').trim();
+    if (!v || v === this.visitorId) return;
+
+    this.visitorId = v;
+    this.storage.setVisitorId(v, this.PAGE_KEY);
+    this.buildProfileUI(v);
+  }
+
+  private async loadMeSafe() {
+    if (this.net.shouldPauseHeavyWork()) return;
+
+    // si backend está en DEGRADED, reduzca agresividad
+    if (this.net.isDegraded()) {
+      // no bloquea, solo evita loops de mucha frecuencia
+    }
+
+    await this.sync.handshakeAndFlush(this.PAGE_KEY);
+
+    const latest = String(this.storage.getVisitorId(this.PAGE_KEY) || '').trim();
+    if (this.isSignedVid(latest)) this.syncVisitorId(latest);
+    if (!this.isSignedVid(this.visitorId)) return;
+
+    const { me } = this.apiEndpoints();
+    const res = await this.api.apiFetch<VisitProfileResponse>(
+      me,
+      this.visitorId,
+      { method: 'GET' },
+      { timeoutMs: 6500, dedupe: true, cacheTtlMs: 12_000, allowStaleOnError: true }
+    );
+    if (!res || res.status === 0) return;
+    if (res.status === 401 || res.status === 403) return;
+
+    if (res.visitorId && this.isSignedVid(res.visitorId)) this.syncVisitorId(res.visitorId);
+
+    const d = res.data ?? null;
+    if (!d) return;
+
+    const prevLevel = Number((this.profile as any)?.level ?? 0);
+    const prevStreak = Number((this.profile as any)?.streak ?? 0);
+
+    this.profile = d;
+    this.computeProgress(prevLevel, prevStreak);
+    this.applyIdentityVisuals('PROFILE');
+    this.pushAudioHint();
     this.ui();
   }
 
-  private pushAudioHint() {
-    const mh = this.mind.getAudioHint();
-    const mode = this.decision.mode;
+  private async trackSafe() {
+    if (this.net.shouldPauseHeavyWork()) return;
 
-    const focusScore = mode === 'FOCUS' ? Math.max(mh.focusScore, 0.85) : mh.focusScore;
+    await this.sync.handshakeAndFlush(this.PAGE_KEY);
 
-    const stressScore =
-      mode === 'REST'
-        ? Math.min(1, mh.stressScore + 0.15)
-        : mode === 'REDUCED'
-        ? Math.min(1, mh.stressScore + 0.08)
-        : mh.stressScore;
+    const latest = String(this.storage.getVisitorId(this.PAGE_KEY) || '').trim();
+    if (this.isSignedVid(latest)) this.syncVisitorId(latest);
+    if (!this.isSignedVid(this.visitorId)) return;
 
-    this.audioSrv.setHint({
-      sseAlive: this.sseAlive,
-      onlineNow: this.onlineNow,
-      mode,
-      focusScore,
-      stressScore,
+    const { track } = this.apiEndpoints();
+    const res = await this.api.apiFetch<VisitProfileResponse>(
+      track,
+      this.visitorId,
+      { method: 'GET' },
+      { timeoutMs: 6500, dedupe: true, cacheTtlMs: 0, allowStaleOnError: false }
+    );
+    if (!res || res.status === 0) return;
+    if (res.status === 401 || res.status === 403) return;
+
+    if (res.visitorId && this.isSignedVid(res.visitorId)) this.syncVisitorId(res.visitorId);
+
+    const d = res.data ?? null;
+    if (!d) return;
+
+    const prevLevel = Number((this.profile as any)?.level ?? 0);
+    const prevStreak = Number((this.profile as any)?.streak ?? 0);
+
+    this.profile = d;
+    this.computeProgress(prevLevel, prevStreak);
+    this.applyIdentityVisuals('PROFILE');
+    this.pushAudioHint();
+    this.ui();
+  }
+
+  private async loadTotalSafe() {
+    if (this.net.shouldPauseHeavyWork()) return;
+
+    await this.sync.handshakeAndFlush(this.PAGE_KEY);
+
+    const latest = String(this.storage.getVisitorId(this.PAGE_KEY) || '').trim();
+    if (this.isSignedVid(latest)) this.syncVisitorId(latest);
+    if (!this.isSignedVid(this.visitorId)) return;
+
+    const { total } = this.apiEndpoints();
+    const res = await this.api.apiFetch<{ total: number }>(
+      total,
+      this.visitorId,
+      { method: 'GET' },
+      { timeoutMs: 5200, dedupe: true, cacheTtlMs: 12_000, allowStaleOnError: true }
+    );
+    if (!res || res.status === 0) return;
+    if (res.status === 401 || res.status === 403) return;
+
+    if (res.visitorId && this.isSignedVid(res.visitorId)) this.syncVisitorId(res.visitorId);
+
+    const d = res.data ?? null;
+    if (!d) return;
+
+    this.ui(() => {
+      this.totalToday = Number((d as any).total ?? 0);
     });
   }
 
-  /* ===================== Tip selection ===================== */
+  private async loadInsightsSafe(force: boolean) {
+    const now = Date.now();
+    const last = Number(this.insights?._ts || 0);
+    if (!force && now - last < 60_000) return;
 
-  private pickNewTip() {
-    this.currentTip = this.tipsSrv.nextTip(this.topic) as TipWithId;
-    this.historyCount = this.storage.getTipHistoryIds().length;
+    if (this.net.shouldPauseHeavyWork()) return;
 
-    // ✅ sin warning: solo vibrar después de gesto real
-    if (this.userInteracted) navigator.vibrate?.(18);
+    await this.sync.handshakeAndFlush(this.PAGE_KEY);
+
+    const latest = String(this.storage.getVisitorId(this.PAGE_KEY) || '').trim();
+    if (this.isSignedVid(latest)) this.syncVisitorId(latest);
+    if (!this.isSignedVid(this.visitorId)) return;
+
+    const { insights } = this.apiEndpoints();
+    const res = await this.api.apiFetch<VisitInsightsResponse>(
+      insights,
+      this.visitorId,
+      { method: 'GET' },
+      { timeoutMs: 6500, dedupe: true, cacheTtlMs: 15_000, allowStaleOnError: true }
+    );
+    if (!res || res.status === 0) return;
+    if (res.status === 401 || res.status === 403) return;
+
+    if (res.visitorId && this.isSignedVid(res.visitorId)) this.syncVisitorId(res.visitorId);
+
+    const d = res.data ?? null;
+    if (!d) return;
+
+    this.insights = { ...(d as any), _ts: now };
+    this.deriveInsightsUI();
+    this.pushAudioHint();
+    this.ui();
   }
 
-  private persistPrefs() {
-    const prefs = this.storage.getPrefs();
-    this.storage.setPrefs({ ...prefs, topic: this.topic, musicState: this.audioSrv.state });
+  /* ===================== Emisión de eventos (alineado backend) ===================== */
+
+  private async emitVisitEvent(type: VisitEventType, meta?: Record<string, any>): Promise<void> {
+    await this.sync.handshakeAndFlush(this.PAGE_KEY);
+
+    const latest = String(this.storage.getVisitorId(this.PAGE_KEY) || '').trim();
+    if (this.isSignedVid(latest)) this.syncVisitorId(latest);
+    if (!this.isSignedVid(this.visitorId)) return;
+
+    // ✅ única vía: OfflineSyncService.trackEvent
+    await this.sync.trackEvent(this.PAGE_KEY, {
+      type,
+      topic: this.topic,
+      ref: meta?.['ref'] ?? null,
+      meta: { ...(meta ?? {}), ref: this.ref }, // ref de URL
+    });
+
+    // fallback pull suave (si SSE no responde)
+    if (!this.sseAlive) {
+      await this.loadMeSafe();
+      await this.loadTotalSafe();
+    }
   }
 
-  /* ===================== Toast ===================== */
+  /* ===================== Helpers existentes ===================== */
 
   private toast(msg: string) {
     this.toastMsg = msg;
@@ -484,7 +735,23 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     }, 1600);
   }
 
-  /* ===================== Progress ===================== */
+  private pickNewTip() {
+    this.currentTip = this.tipsSrv.nextTip(this.topic) as TipWithId;
+    this.historyCount = this.storage.getTipHistoryIds().length;
+    if (this.userInteracted) navigator.vibrate?.(18);
+  }
+
+  private getTipId(tip: TipWithId | null): string {
+    if (!tip) return '';
+    const id = (tip as any).id ?? (tip as any)._id ?? '';
+    return String(id || '').trim();
+  }
+
+  private formatTipForCopy(t: TipWithId): string {
+    const title = t.title ? `• ${t.title}` : '• Tip';
+    const steps = (t.steps || []).map((s, i) => `${i + 1}) ${s}`).join('\n');
+    return `${title}\n\n${steps}\n\nSystemBlacklem · Tips`;
+  }
 
   private computeProgress(prevLevel?: number, prevStreak?: number) {
     const level = Math.max(1, Number((this.profile as any)?.level ?? 1));
@@ -504,7 +771,6 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
 
     this.updateCardVisuals();
 
-    // ✅ SFX solo si ya fue desbloqueado por el usuario (evita spam de toast por SSE/timers)
     if (typeof prevLevel === 'number' && level > prevLevel) {
       void this.audioSrv.sfx('LEVEL_UP', { strength: 1 });
     }
@@ -512,147 +778,6 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
       void this.audioSrv.sfx('STREAK_UP', { strength: 0.95 });
     }
   }
-
-  /* ===================== API helpers ===================== */
-
-  private apiEndpoints() {
-    // Nota: aquí mantengo tu firma actual
-    return this.api.endpoints(this.PAGE_KEY, this.visitorId);
-  }
-
-  private syncVisitorId(newVid?: string) {
-    if (!newVid) return;
-    const v = String(newVid).trim();
-    if (!v || v === this.visitorId) return;
-
-    this.visitorId = v;
-    this.storage.setVisitorId(v);
-    this.buildProfileUI(v);
-  }
-
-  private async loadMe() {
-    const { me } = this.apiEndpoints();
-    const res = await this.api.apiFetch<VisitProfileResponse>(me, this.visitorId);
-    if (!res) return;
-
-    this.syncVisitorId(res.visitorId);
-
-    const d = res.data ?? null;
-    if (!d) return;
-
-    const prevLevel = Number((this.profile as any)?.level ?? 0);
-    const prevStreak = Number((this.profile as any)?.streak ?? 0);
-
-    this.profile = d;
-    this.computeProgress(prevLevel, prevStreak);
-
-    this.applyIdentityVisuals('PROFILE');
-    this.profileBadge = 'Perfil público';
-
-    this.pushAudioHint();
-    this.ui();
-  }
-
-  private async track() {
-    const { track } = this.apiEndpoints();
-    const res = await this.api.apiFetch<VisitProfileResponse>(track, this.visitorId);
-    if (!res) return;
-
-    this.syncVisitorId(res.visitorId);
-
-    const d = res.data ?? null;
-    if (!d) return;
-
-    const prevLevel = Number((this.profile as any)?.level ?? 0);
-    const prevStreak = Number((this.profile as any)?.streak ?? 0);
-
-    this.profile = d;
-    this.computeProgress(prevLevel, prevStreak);
-    this.applyIdentityVisuals('PROFILE');
-
-    this.pushAudioHint();
-    this.ui();
-  }
-
-  private async loadTotal() {
-    const { total } = this.apiEndpoints();
-    const res = await this.api.apiFetch<{ page?: string; total: number }>(total, this.visitorId);
-    if (!res) return;
-
-    this.syncVisitorId(res.visitorId);
-
-    const d = res.data ?? null;
-    if (!d) return;
-
-    this.ui(() => {
-      this.totalToday = Number(d.total ?? 0);
-    });
-  }
-
-  private isValidType(t: string): t is VisitEventType {
-    return t === 'NEW_TIP' || t === 'COPY_TIP' || t === 'SHARE_TIP' || t === 'TOPIC';
-  }
-
-  private async sendEvent(typeRaw: string) {
-    const type = String(typeRaw ?? '').trim().toUpperCase();
-    if (!this.isValidType(type)) return;
-
-    const res = await this.api.sendEvent<VisitProfileResponse>(this.PAGE_KEY, {
-      type,
-      topic: this.topic ?? null,
-      ref: this.ref ?? null,
-    });
-
-    if (!res) return;
-
-    this.syncVisitorId(res.visitorId);
-
-    const d = res.data ?? null;
-    if (d) {
-      const prevLevel = Number((this.profile as any)?.level ?? 0);
-      const prevStreak = Number((this.profile as any)?.streak ?? 0);
-
-      this.profile = d;
-      this.computeProgress(prevLevel, prevStreak);
-      this.applyIdentityVisuals('PROGRESS', type);
-    }
-
-    void this.loadInsights(true);
-    void this.loadTotal();
-
-    this.pushAudioHint();
-    this.ui();
-  }
-
-  private async loadInsights(force: boolean) {
-    const now = Date.now();
-    const last = Number(this.insights?._ts || 0);
-    if (!force && now - last < 15_000) return;
-
-    const { insights } = this.apiEndpoints();
-    const res = await this.api.apiFetch<VisitInsightsResponse>(insights, this.visitorId);
-    if (!res) return;
-
-    this.syncVisitorId(res.visitorId);
-
-    const d = res.data ?? null;
-    if (!d) return;
-
-    this.insights = { ...(d as any), _ts: now };
-    this.deriveInsightsUI();
-
-    this.pushAudioHint();
-    this.ui();
-  }
-
-  /* ===================== trackBy ===================== */
-
-  trackByKpi = (_: number, k: { label: string; kind?: 'online' }) => `${k.kind ?? 'kpi'}:${k.label}`;
-  trackByAction = (_: number, a: { label: string }) => a.label;
-  trackByHour = (_: number, h: { key: string }) => h.key;
-  trackByStep = (i: number, s: string) => `${i}:${s}`;
-
-  /* ===================== Timezone fix ===================== */
 
   private utcHourToLocalLabel(utcHour: number): string {
     const d = new Date(Date.UTC(2024, 0, 1, utcHour, 0, 0));
@@ -691,208 +816,6 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     this.healthHint = this.actionRows.length ? 'Buen balance' : 'Inicie con 1 tip';
   }
 
-  /* ===================== SSE ===================== */
-
-  private closeSse(_reason: string) {
-    try {
-      this.es?.close();
-    } catch {}
-    this.es = undefined;
-
-    if (this.tOnlinePoll) clearInterval(this.tOnlinePoll);
-    this.tOnlinePoll = undefined;
-
-    if (this.tSseRetry) clearTimeout(this.tSseRetry);
-    this.tSseRetry = undefined;
-  }
-
-  private scheduleSseReconnect(reason: 'error' | 'watchdog' | 'manual') {
-    if (this.tSseRetry) return;
-
-    this.sseRetry = Math.min(10, this.sseRetry + 1);
-    const base = 900;
-    const max = 20_000;
-    const wait = Math.min(max, Math.round(base * Math.pow(1.6, this.sseRetry)));
-
-    this.ui(() => {
-      this.sseAlive = false;
-      this.profileBadge = reason === 'watchdog' ? 'SSE silencioso…' : 'Reconectando…';
-      this.applyIdentityVisuals('ONLINE', 'SSE');
-    });
-
-    this.tipsSrv.sseDown();
-    this.pushAudioHint();
-
-    this.tSseRetry = setTimeout(() => {
-      this.tSseRetry = undefined;
-      this.startRealtimeSse();
-    }, wait);
-  }
-
-  private async pollOnlineOnce(onlineUrl: string) {
-    const res = await this.api.apiFetch<{ page?: string; online: number }>(onlineUrl, this.visitorId);
-    if (!res) return;
-
-    this.syncVisitorId(res.visitorId);
-
-    const d = res.data ?? null;
-    if (!d) return;
-
-    this.ui(() => {
-      this.onlineNow = Number(d.online ?? 0);
-      this.applyIdentityVisuals('ONLINE', 'SSE');
-    });
-
-    // ✅ si está bloqueado, AudioService solo hace toast si corresponde
-    void this.audioSrv.sfx('ONLINE_PULSE', { strength: Math.min(1, 0.25 + this.onlineNow / 50) });
-    this.pushAudioHint();
-  }
-
-  private startRealtimeSse() {
-    const { stream, online } = this.apiEndpoints();
-
-    this.closeSse('reconnect');
-
-    this.ui(() => {
-      this.sseAlive = false;
-      this.lastSseTs = Date.now();
-      this.profileBadge = 'Conectando SSE…';
-      this.applyIdentityVisuals('ONLINE', 'SSE');
-    });
-
-    this.tOnlinePoll = setInterval(() => void this.pollOnlineOnce(online), 12_000);
-    void this.pollOnlineOnce(online);
-
-    const openSse = (this.api as any).openSse?.bind(this.api) as
-      | ((url: string) => EventSource)
-      | undefined;
-    this.es = openSse ? openSse(stream) : new EventSource(stream);
-
-    const parse = (e: MessageEvent) => {
-      try {
-        return JSON.parse(String(e.data));
-      } catch {
-        return null;
-      }
-    };
-
-    const markAlive = () => {
-      this.lastSseTs = Date.now();
-      if (!this.sseAlive) {
-        this.sseAlive = true;
-        this.sseRetry = 0;
-      }
-    };
-
-    const markOkUi = () => {
-      this.profileBadge = 'SSE OK';
-      this.applyIdentityVisuals('ONLINE', 'SSE');
-    };
-
-    this.es.addEventListener('hello', (e: MessageEvent) => {
-      const msg = parse(e) as any;
-
-      this.ui(() => {
-        markAlive();
-        if (msg?.visitorId) this.syncVisitorId(String(msg.visitorId));
-        if (msg?.online != null) this.onlineNow = Number(msg.online);
-        markOkUi();
-      });
-
-      this.tipsSrv.sseUp();
-      this.pushAudioHint();
-    });
-
-    this.es.addEventListener('ping', () => {
-      this.ui(() => {
-        markAlive();
-        markOkUi();
-      });
-      this.pushAudioHint();
-    });
-
-    this.es.addEventListener('online', (e: MessageEvent) => {
-      const msg = parse(e) as any;
-
-      this.ui(() => {
-        markAlive();
-        if (msg?.online != null) this.onlineNow = Number(msg.online);
-        this.applyIdentityVisuals('ONLINE', 'SSE');
-      });
-
-      void this.audioSrv.sfx('ONLINE_PULSE', { strength: Math.min(1, 0.25 + this.onlineNow / 50) });
-      this.pushAudioHint();
-    });
-
-    this.es.addEventListener('profile', (e: MessageEvent) => {
-      const p = parse(e) as VisitProfileResponse | null;
-      if (!p) return;
-
-      this.ui(() => {
-        markAlive();
-        const prevLevel = Number((this.profile as any)?.level ?? 0);
-        const prevStreak = Number((this.profile as any)?.streak ?? 0);
-
-        this.profile = p;
-        this.computeProgress(prevLevel, prevStreak);
-        this.applyIdentityVisuals('PROFILE');
-      });
-
-      this.pushAudioHint();
-    });
-
-    this.es.addEventListener('insights', (e: MessageEvent) => {
-      const i = parse(e) as VisitInsightsResponse | null;
-      if (!i) return;
-
-      this.ui(() => {
-        markAlive();
-        this.insights = { ...(i as any), _ts: Date.now() };
-        this.deriveInsightsUI();
-      });
-
-      this.pushAudioHint();
-    });
-
-    this.es.addEventListener('decision', (e: MessageEvent) => {
-      const d = parse(e) as VisitDecisionResponse | null;
-      if (!d) return;
-
-      this.ui(() => {
-        markAlive();
-        this.decision = {
-          mode: (d.mode ?? 'NORMAL') as DecisionMode,
-          maxTipsAllowed: Number(d.maxTipsAllowed ?? 999),
-          allowShare: !!d.allowShare,
-          allowNewTip: !!d.allowNewTip,
-          systemMessage: String(d.systemMessage ?? 'Sistema listo.'),
-        };
-      });
-
-      this.pushAudioHint();
-    });
-
-    this.es.onerror = () => {
-      this.ui(() => {
-        this.sseAlive = false;
-        this.profileBadge = 'SSE error…';
-        this.applyIdentityVisuals('ONLINE', 'SSE');
-      });
-
-      this.tipsSrv.sseDown();
-      this.pushAudioHint();
-
-      try {
-        this.es?.close();
-      } catch {}
-      this.es = undefined;
-
-      this.scheduleSseReconnect('error');
-    };
-  }
-
-  /* ===================== Header KPIs ===================== */
-
   private refreshHeaderKpis() {
     this.headerKpis = [
       { icon: '👁️', label: 'Visitas', value: this.totalView },
@@ -902,74 +825,30 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     ];
   }
 
-  /* ===================== Helpers ===================== */
+  private todayKey(): string {
+    const d = new Date();
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  }
 
-  private async copyText(text: string) {
+  private trackFlagKey(): string {
+    return `${this.TRACK_FLAG_PREFIX}${this.PAGE_KEY}::${this.todayKey()}`;
+  }
+
+  private wasTrackedToday(): boolean {
     try {
-      await navigator.clipboard.writeText(text);
-      return true;
+      return sessionStorage.getItem(this.trackFlagKey()) === '1';
     } catch {
       return false;
     }
   }
 
-  private async shareNative(text: string) {
+  private markTrackedToday(): void {
     try {
-      await (navigator as any).share?.({ text });
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  /* ===================== Perfil visual ===================== */
-
-  private buildProfileUI(visitorId: string) {
-    const vid = String(visitorId || '').trim();
-    if (!vid) return;
-
-    this.visitorAlias = this.makeAlias(vid);
-    this.profileLabel = 'Visitor';
-    this.profileBadge = this.sseAlive ? 'SSE OK' : 'Sistema activo';
-
-    const seed = `${vid}::${this.avatarSalt}`;
-    const h = this.hash32(seed);
-
-    const c1 = this.pickColor(h);
-    const c2 = this.pickColor(this.hash32(seed + 'b'));
-    this.avatarBg = `linear-gradient(135deg, ${c1}, ${c2})`;
-    this.avatarRing = 'rgba(255,255,255,.22)';
-
-    this.updateCardVisuals();
-  }
-
-  private makeAlias(id: string): string {
-    const clean = (id || '').replace(/^Visitorv_?/i, '').replace(/[^a-zA-Z0-9]/g, '');
-    if (!clean) return 'SB-ANON';
-    const a = clean.slice(0, 4).toUpperCase();
-    const b = clean.slice(-4);
-    return `SB-${a}·${b}`;
-  }
-
-  private hash32(input: string): number {
-    let h = 0x811c9dc5;
-    for (let i = 0; i < input.length; i++) {
-      h ^= input.charCodeAt(i);
-      h = Math.imul(h, 0x01000193);
-    }
-    return h >>> 0;
-  }
-
-  private pickColor(h: number): string {
-    const palette = [
-      'rgba(0,255,209,.40)',
-      'rgba(120,92,255,.42)',
-      'rgba(255,92,122,.38)',
-      'rgba(255,214,120,.30)',
-      'rgba(80,170,255,.38)',
-      'rgba(180,120,255,.34)',
-    ];
-    return palette[h % palette.length];
+      sessionStorage.setItem(this.trackFlagKey(), '1');
+    } catch {}
   }
 
   private updateCardVisuals() {
@@ -993,14 +872,14 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
       return;
     }
 
-    if (reason === 'ACTION' && actionType) {
-      this.bumpCardState(actionType);
-      return;
-    }
-
     if (reason === 'ONLINE') {
       this.cardState = this.sseAlive ? 'LISTEN' : 'IDLE';
       this.syncHostClass();
+      return;
+    }
+
+    if (reason === 'ACTION' && actionType) {
+      this.bumpCardState(actionType);
     }
   }
 
@@ -1009,7 +888,8 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     this.syncHostClass();
     this.ui();
 
-    setTimeout(() => {
+    if (this.tBumpReset) clearTimeout(this.tBumpReset);
+    this.tBumpReset = setTimeout(() => {
       this.cardState = 'IDLE';
       this.syncHostClass();
       this.ui();
@@ -1023,4 +903,68 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
       this.cdr.markForCheck();
     });
   }
+
+  private buildProfileUI(visitorId: string) {
+    const vid = String(visitorId || '').trim();
+
+    // ✅ Perfil = identidad; no mezcla “modo”, “sse” ni sistema
+    this.profileLabel = 'Visitor';
+    this.profileBadge = 'Perfil público';
+
+    if (!vid) {
+      this.visitorAlias = 'SB-ANON';
+      this.avatarBg = 'linear-gradient(135deg, rgba(120,92,255,.45), rgba(0,255,209,.28))';
+      this.avatarRing = 'rgba(255,255,255,.18)';
+      this.updateCardVisuals();
+      return;
+    }
+
+    this.visitorAlias = this.makeAlias(vid);
+    this.updateCardVisuals();
+  }
+
+  private makeAlias(id: string): string {
+    const raw = String(id || '').trim();
+
+    // ✅ Limpieza robusta: quita prefijos y deja alfanumérico
+    const clean = raw
+      .replace(/^Visitorv_?/i, '')
+      .replace(/^Visitor_?/i, '')
+      .replace(/^VID_?/i, '')
+      .replace(/[^a-zA-Z0-9]/g, '');
+
+    if (!clean) return 'SB-ANON';
+
+    const a = clean.slice(0, 4).toUpperCase();
+    const b = clean.slice(-4);
+    return `SB-${a}·${b}`;
+  }
+
+  private pushAudioHint() {
+    const mh = this.mind.getAudioHint();
+    const mode = this.decision.mode;
+
+    const focusScore = mode === 'FOCUS' ? Math.max(mh.focusScore, 0.85) : mh.focusScore;
+    const stressScore =
+      mode === 'REST'
+        ? Math.min(1, mh.stressScore + 0.15)
+        : mode === 'REDUCED'
+        ? Math.min(1, mh.stressScore + 0.08)
+        : mh.stressScore;
+
+    this.audioSrv.setHint({
+      sseAlive: this.sseAlive,
+      onlineNow: this.onlineNow,
+      mode,
+      focusScore,
+      stressScore,
+    });
+  }
+
+  // trackBy
+  trackByKpi = (_: number, k: { label: string; kind?: 'online' }) =>
+    `${k.kind ?? 'kpi'}:${k.label}`;
+  trackByStep = (i: number, s: string) => `${i}:${s}`;
+  trackByAction = (_: number, a: { label: string }) => a.label;
+  trackByHour = (_: number, h: { key: string }) => h.key;
 }

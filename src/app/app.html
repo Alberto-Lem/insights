@@ -1,4 +1,3 @@
-<!-- src/app/app.html (CORREGIDO) -->
 <canvas #fxCanvas id="fxCanvas" aria-hidden="true"></canvas>
 
 <div class="wrap">
@@ -44,7 +43,7 @@
     </header>
 
     <!-- =========================
-         SUBHEADER:
+         SUBHEADER: Perfil | Sistema | Audio
          ========================= -->
     <section class="subTop" aria-label="Identidad y controles">
       <!-- Col 1: Perfil -->
@@ -70,11 +69,11 @@
         </div>
 
         <div class="pActions" aria-label="Acciones de perfil">
-          <button type="button" class="miniBtn" (click)="copyVisitorId()">Copiar ID</button>
+          <button type="button" class="miniBtn" (click)="copyVisitorId()">Copiar Alias</button>
         </div>
       </div>
 
-      <!-- Col 2: Estado del sistema (centrado, con autoridad) -->
+      <!-- Col 2: Estado del sistema (ÚNICA FUENTE DEL MODO) -->
       <section
         class="sysBar"
         [class.ok]="sseAlive"
@@ -101,10 +100,8 @@
         </div>
       </section>
 
-      <!-- Col 3: Audio -->
+      <!-- Col 3: Audio (OK aquí, no duplica el MODO) -->
       <div class="quick" aria-label="Control de audio">
-        <!-- ✅ CORRECCIÓN: el botón SIEMPRE usa el gesto para desbloquear,
-             pero la acción visible sigue siendo "toggle" -->
         <button class="miniBtn ghost" type="button" (click)="toggleMusic()">
           {{ musicLabel }}
         </button>
@@ -214,9 +211,6 @@
           </button>
         </div>
 
-        <!-- ✅ ELIMINADO: AudioBanner (ya no se muestra como bloque grande)
-             Ahora el "audio bloqueado" se comunica por TOAST profesional. -->
-
         <!-- Bottom summary -->
         <div class="contentBottom">
           <div class="bottomGrid">
@@ -251,14 +245,20 @@
           <div class="meter">
             <div class="meterTop">
               <span>XP</span>
-              <span><b>{{ progress.x }}</b> / {{ progress.nextGoal }}</span>
+              <span
+                ><b>{{ progress.x }}</b> / {{ progress.nextGoal }}</span
+              >
             </div>
 
             <div class="bar"><i [style.width.%]="progress.pct"></i></div>
 
             <div class="meterFoot">
-              <span>Faltan <b>{{ progress.left }}</b> XP</span>
-              <span>Próx. nivel <b>{{ progress.nextLevel }}</b></span>
+              <span
+                >Faltan <b>{{ progress.left }}</b> XP</span
+              >
+              <span
+                >Próx. nivel <b>{{ progress.nextLevel }}</b></span
+              >
             </div>
           </div>
         </section>
@@ -287,7 +287,8 @@
 
           <ul class="list">
             <li *ngFor="let a of actionRows; trackBy: trackByAction">
-              <span>{{ a.label }}</span><b>{{ a.value }}</b>
+              <span>{{ a.label }}</span
+              ><b>{{ a.value }}</b>
             </li>
             <li *ngIf="actionRows.length === 0"><span>Sin acciones</span><b>—</b></li>
           </ul>
@@ -296,7 +297,8 @@
             <summary>Ver distribución por hora</summary>
             <ul class="list">
               <li *ngFor="let h of hourRows; trackBy: trackByHour">
-                <span>{{ h.key }}</span><b>{{ h.value }}</b>
+                <span>{{ h.key }}</span
+                ><b>{{ h.value }}</b>
               </li>
             </ul>
           </details>
@@ -306,11 +308,7 @@
   </article>
 </div>
 
-<!-- ✅ TOAST PROFESIONAL:
-     - Debe ir fuera de la card para quedar flotante
-     - En SCSS: position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%);
-     - max-width: 680px; width: min(680px, calc(100vw - 28px));
--->
+<!-- ✅ TOAST flotante -->
 <div class="toast" role="status" aria-live="polite" [class.show]="toastVisible">
   <span class="toastDot" aria-hidden="true"></span>
   <span class="toastTxt">{{ toastMsg }}</span>

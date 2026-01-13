@@ -1,6 +1,6 @@
 // src/app/service/mind.service.ts
 import { Injectable, inject } from '@angular/core';
-import { BehaviorSubject } from 'rxjs';
+import { BehaviorSubject, Observable } from 'rxjs';
 import { StorageService } from './storage.service';
 import type { MindState, MemoryEvent, Emotion, MoodFx } from '../core/mind.types';
 import type { Topic } from '../models/models';
@@ -28,10 +28,10 @@ export type AudioHint = {
 
 @Injectable({ providedIn: 'root' })
 export class MindService {
-  private storage = inject(StorageService);
+  private readonly storage = inject(StorageService);
 
   private readonly initial: MindState = this.normalize(
-    this.storage.getMindState() ?? {
+    this.storage.getMindState?.() ?? {
       mood: 'calm',
       energy: 72,
       trust: 70,
@@ -41,34 +41,35 @@ export class MindService {
     }
   );
 
-  private state$ = new BehaviorSubject<MindState>(this.initial);
+  private readonly stateSubject = new BehaviorSubject<MindState>(this.initial);
+  readonly state$: Observable<MindState> = this.stateSubject.asObservable();
 
-  observe() {
-    return this.state$.asObservable();
+  observe(): Observable<MindState> {
+    return this.state$;
   }
 
-  snapshot() {
-    return this.state$.value;
+  snapshot(): MindState {
+    return this.stateSubject.value;
   }
 
-  /** Entrada única: la app “percibe” y el cerebro actualiza estado + memoria */
   ingest(
     type: MindEventType | string,
     topic: Topic,
     ok?: boolean,
-    meta?: Record<string, any>
+    meta?: Record<string, unknown>
   ): MindState {
     const ev: MemoryEvent = { ts: Date.now(), type, topic, ok, meta };
-    this.storage.pushMindEvent(ev);
+
+    // ✅ Persistencia defensiva (por si el storage está temporalmente desfasado)
+    this.storage.pushMindEvent?.(ev);
 
     const next = this.reduce(this.snapshot(), ev);
-    this.state$.next(next);
-    this.storage.setMindState(next);
+    this.stateSubject.next(next);
+    this.storage.setMindState?.(next);
 
     return next;
   }
 
-  /** Atajo recomendado: para integrar con el audio sin duplicar lógica */
   getAudioHint(s: MindState = this.snapshot()): AudioHint {
     const focusScore = clamp((s.focus ?? 50) / 100, 0, 1);
 
@@ -80,7 +81,6 @@ export class MindService {
     return { focusScore, stressScore };
   }
 
-  /** Estilo/expresión: cómo se ve y se comporta según ánimo */
   getFxMode(mood: Emotion): MoodFx {
     if (mood === 'stressed') return 'minimal';
     if (mood === 'tired') return 'low';
@@ -90,28 +90,21 @@ export class MindService {
     return 'soft';
   }
 
-  /** Texto corto para UI (microcopy) */
   getToneLine(s: MindState, topic: Topic): string {
     if (s.mood === 'stressed') return 'Respiremos: un paso simple y claro.';
     if (s.mood === 'tired') return 'Suave y corto: cuide energía y enfoque.';
     if (s.mood === 'curious') return 'Modo exploración: probemos algo nuevo.';
     if (s.mood === 'focused') return 'Directo al punto: acción concreta.';
     if (s.mood === 'happy') return 'Excelente ritmo: mantenga constancia.';
-    return topic === 'seguridad'
-      ? 'Tip breve y aplicable hoy.'
-      : 'Una acción pequeña, impacto real.';
+    return topic === 'seguridad' ? 'Tip breve y aplicable hoy.' : 'Una acción pequeña, impacto real.';
   }
 
-  /* =========================
-     Reducer (estado + sensibilidad)
-  ========================= */
+  // ========================= Reducer =========================
 
   private reduce(prev: MindState, ev: MemoryEvent): MindState {
-    // 0) Normalizar entrada
     const prevN = this.normalize(prev);
     const s: MindState = { ...prevN };
 
-    // 1) Deriva por tiempo real (sin “saltos”)
     const dtMs = Math.max(0, ev.ts - (s.lastUpdateTs || ev.ts));
     const dtMin = clamp(dtMs / 60000, 0, 240);
 
@@ -120,7 +113,6 @@ export class MindService {
     const baseCuriosity = 55;
     const baseTrust = 65;
 
-    // t de relax: en 60 min vuelve ~63% a base (suave)
     const relaxT = 1 - Math.exp(-dtMin / 60);
 
     s.energy = lerp(s.energy, baseEnergy, relaxT * 0.22);
@@ -128,12 +120,10 @@ export class MindService {
     s.curiosity = lerp(s.curiosity, baseCuriosity, relaxT * 0.14);
     s.trust = lerp(s.trust, baseTrust, relaxT * 0.10);
 
-    // 2) Efecto por topic (sensibilidad contextual)
-    const topicBias = this.topicBias(ev.topic);
+    const topicBias = this.topicBias(ev.topic as Topic);
     s.focus = clamp(s.focus + topicBias.focus, 0, 100);
     s.curiosity = clamp(s.curiosity + topicBias.curiosity, 0, 100);
 
-    // 3) Reglas por evento (refuerzo)
     const type = String(ev.type) as MindEventType | string;
 
     switch (type) {
@@ -193,8 +183,7 @@ export class MindService {
         break;
 
       case 'SESSION_TICK': {
-        // ✅ TS4111: index signature
-        const sec = clamp(Number(ev.meta?.['seconds'] ?? 0), 0, 300);
+        const sec = clamp(Number((ev.meta as any)?.['seconds'] ?? 0), 0, 300);
         s.focus = clamp(s.focus + (sec / 60) * 0.6, 0, 100);
         s.trust = clamp(s.trust + (sec / 60) * 0.35, 0, 100);
         s.energy = clamp(s.energy - (sec / 60) * 0.25, 0, 100);
@@ -202,7 +191,6 @@ export class MindService {
       }
     }
 
-    // 4) Señal ok/fail (si la usa)
     if (ev.ok === true) {
       s.trust = clamp(s.trust + 0.8, 0, 100);
       s.focus = clamp(s.focus + 0.4, 0, 100);
@@ -211,10 +199,7 @@ export class MindService {
       s.focus = clamp(s.focus - 0.6, 0, 100);
     }
 
-    // 5) Mood derivado (coherente y estable)
     s.mood = this.deriveMood(s);
-
-    // 6) Timestamp final
     s.lastUpdateTs = ev.ts;
 
     return this.normalize(s);
@@ -247,13 +232,13 @@ export class MindService {
     if (hour >= 6 && hour <= 9) return 68;
     if (hour >= 10 && hour <= 15) return 72;
     if (hour >= 16 && hour <= 20) return 66;
-    return 58; // 21-23
+    return 58;
   }
 
   private topicBias(topic: Topic): { focus: number; curiosity: number } {
     if (topic === 'seguridad') return { focus: +0.6, curiosity: +0.2 };
     if (topic === 'estudio') return { focus: +0.8, curiosity: +0.3 };
     if (topic === 'productividad') return { focus: +0.5, curiosity: +0.4 };
-    return { focus: +0.2, curiosity: +0.2 }; // bienestar
+    return { focus: +0.2, curiosity: +0.2 };
   }
 }

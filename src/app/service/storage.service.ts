@@ -1,35 +1,55 @@
 // src/app/service/storage.service.ts
 import { Injectable } from '@angular/core';
 import type { Topic, TipStatsMap, TipStat } from '../models/models';
-import { randomId } from '../utils/utils';
 import type { MemoryEvent, MindState } from '../core/mind.types';
 
 export type Prefs = { topic?: Topic; musicState?: 'AUTO' | 'ON' | 'OFF' };
 
 export type ClientMeta = {
-  tz?: string;          // IANA: "America/Guatemala", "America/New_York", etc.
-  tzOffsetMin?: number; // new Date().getTimezoneOffset()
-  lang?: string;        // navigator.language
+  tz?: string;
+  tzOffsetMin?: number;
+  lang?: string;
+};
+
+export type PendingVisitEvent = {
+  id: string;
+  page: string;
+  type: 'NEW_TIP' | 'COPY_TIP' | 'SHARE_TIP' | 'TOPIC';
+  topic?: string | null;
+  ref?: string | null;
+  meta?: Record<string, unknown>;
+  ts: number;
+  tries: number;
 };
 
 @Injectable({ providedIn: 'root' })
 export class StorageService {
   readonly PREF_KEY = 'sb_visits_prefs_v1';
   readonly HISTORY_KEY = 'sb_tip_history_v2';
-  readonly VISITOR_KEY = 'sb_visitor_id_v1';
+
+  readonly VISITOR_KEY_PREFIX = 'sb_visitor_id_v1:';
   readonly TIP_STATS_KEY = 'sb_tip_stats_v1';
 
   readonly MIND_STATE_KEY = 'sb_mind_state_v1';
   readonly MIND_EVENTS_KEY = 'sb_mind_events_v1';
 
   readonly CLIENT_META_KEY = 'sb_client_meta_v1';
+  readonly PENDING_EVENTS_KEY = 'sb_pending_events_v1';
 
-  // ✅ cache en memoria para evitar JSON.parse repetido
-  private mem = new Map<string, any>();
-
-  // ✅ throttle de escrituras (para no “martillar” localStorage)
+  private mem = new Map<string, unknown>();
   private writeTimers = new Map<string, any>();
   private pendingWrites = new Map<string, string>();
+
+  constructor() {
+    // ✅ multi-tab: si otra pestaña cambia localStorage, invalide cache local
+    try {
+      window.addEventListener('storage', (ev) => {
+        const k = String(ev?.key || '');
+        if (!k) return;
+        this.mem.delete(k);
+      });
+    } catch {}
+  }
 
   safeGet<T>(key: string): T | null {
     try {
@@ -39,15 +59,14 @@ export class StorageService {
       if (!raw) return null;
 
       const parsed = JSON.parse(raw) as T;
-      this.mem.set(key, parsed);
+      this.mem.set(key, parsed as unknown);
       return parsed;
     } catch {
       return null;
     }
   }
 
-  /** Escritura inmediata (la suya original) */
-  safeSet(key: string, value: any): void {
+  safeSet(key: string, value: unknown): void {
     try {
       const raw = JSON.stringify(value);
       localStorage.setItem(key, raw);
@@ -55,11 +74,7 @@ export class StorageService {
     } catch {}
   }
 
-  /**
-   * ✅ Escritura “suave” (throttle).
-   * Útil para stats/eventos que pueden dispararse muchas veces por minuto.
-   */
-  safeSetThrottled(key: string, value: any, delayMs = 350): void {
+  safeSetThrottled(key: string, value: unknown, delayMs = 350): void {
     try {
       const raw = JSON.stringify(value);
       this.mem.set(key, value);
@@ -72,12 +87,16 @@ export class StorageService {
         const pending = this.pendingWrites.get(key);
         if (!pending) return;
         this.pendingWrites.delete(key);
-        try { localStorage.setItem(key, pending); } catch {}
+        try {
+          localStorage.setItem(key, pending);
+        } catch {}
       }, Math.max(80, delayMs));
 
       this.writeTimers.set(key, t);
     } catch {}
   }
+
+  // ================= Prefs / Tips =================
 
   getPrefs(): Prefs {
     return this.safeGet<Prefs>(this.PREF_KEY) ?? { topic: 'seguridad', musicState: 'AUTO' };
@@ -110,33 +129,39 @@ export class StorageService {
     if (kind === 'seen') cur.lastSeen = Date.now();
 
     all[id] = cur;
-
-    // ✅ throttle para no escribir a disco cada interacción
     this.safeSetThrottled(this.TIP_STATS_KEY, all, 500);
   }
 
-  getVisitorId(): string {
-    const stored = this.safeGet<string>(this.VISITOR_KEY);
-    if (typeof stored === 'string' && stored.length >= 8) return stored;
+  // ================= VisitorId (por page) =================
 
-    const v = `v_${randomId(22)}`;
-    this.safeSet(this.VISITOR_KEY, v);
-    return v;
+  private visitorKey(pageKey?: string): string {
+    const p = String(pageKey || 'visits').trim().toLowerCase() || 'visits';
+    return `${this.VISITOR_KEY_PREFIX}${p}`;
   }
 
-  setVisitorId(v: string): void {
+  getVisitorId(pageKey?: string): string {
+    const stored = this.safeGet<string>(this.visitorKey(pageKey));
+    if (typeof stored === 'string') {
+      const s = stored.trim();
+      if (s.length >= 10) return s;
+    }
+    return '';
+  }
+
+  setVisitorId(v: string, pageKey?: string): void {
     const next = String(v ?? '').trim();
     if (!next) return;
-    this.safeSet(this.VISITOR_KEY, next);
+    this.safeSet(this.visitorKey(pageKey), next);
   }
+
+  // ================= Client meta =================
 
   getClientMeta(): ClientMeta {
     const cached = this.safeGet<ClientMeta>(this.CLIENT_META_KEY);
     if (cached && (cached.tz || cached.lang || typeof cached.tzOffsetMin === 'number')) return cached;
 
     const tz =
-      (Intl?.DateTimeFormat?.().resolvedOptions?.().timeZone as string | undefined) ||
-      undefined;
+      (Intl?.DateTimeFormat?.().resolvedOptions?.().timeZone as string | undefined) || undefined;
 
     const meta: ClientMeta = {
       tz,
@@ -144,7 +169,6 @@ export class StorageService {
       lang: (navigator?.language || 'es') as string,
     };
 
-    // ✅ guardar siempre (aunque tz sea undefined) para evitar recalcular
     this.safeSet(this.CLIENT_META_KEY, meta);
     return meta;
   }
@@ -152,6 +176,8 @@ export class StorageService {
   setClientMeta(m: ClientMeta): void {
     this.safeSet(this.CLIENT_META_KEY, m);
   }
+
+  // ================= Mind =================
 
   getMindState(): MindState | null {
     return this.safeGet<MindState>(this.MIND_STATE_KEY);
@@ -168,19 +194,42 @@ export class StorageService {
   pushMindEvent(ev: MemoryEvent, max = 80): MemoryEvent[] {
     const all = this.getMindEvents();
     const next = [ev, ...all].slice(0, max);
-
-    // ✅ throttle para evitar writes frecuentes
     this.safeSetThrottled(this.MIND_EVENTS_KEY, next, 650);
     return next;
   }
 
-  /** Opcional: si desea limpiar cache http local (si usted lo implementa) */
-  tryRemoveCache(prefix = 'sb_http_cache::'): void {
-    try {
-      for (let i = localStorage.length - 1; i >= 0; i--) {
-        const k = localStorage.key(i);
-        if (k && k.startsWith(prefix)) localStorage.removeItem(k);
-      }
-    } catch {}
+  // ================= Pending events =================
+
+  getPendingEvents(): PendingVisitEvent[] {
+    return this.safeGet<PendingVisitEvent[]>(this.PENDING_EVENTS_KEY) ?? [];
+  }
+
+  setPendingEvents(list: PendingVisitEvent[]): void {
+    this.safeSetThrottled(this.PENDING_EVENTS_KEY, list, 650);
+  }
+
+  enqueueEvent(ev: PendingVisitEvent, max = 120): void {
+    const all = this.getPendingEvents();
+    const next = [...all, ev].slice(-max);
+    this.setPendingEvents(next);
+  }
+
+  peekMany(n: number): PendingVisitEvent[] {
+    const all = this.getPendingEvents();
+    return all.slice(0, Math.max(0, n));
+  }
+
+  bumpTries(ids: string[]): void {
+    const set = new Set(ids);
+    const all = this.getPendingEvents();
+    const next = all.map((e) => (set.has(e.id) ? { ...e, tries: (e.tries ?? 0) + 1 } : e));
+    this.setPendingEvents(next);
+  }
+
+  dropByIds(ids: string[]): void {
+    const set = new Set(ids);
+    const all = this.getPendingEvents();
+    const next = all.filter((e) => !set.has(e.id));
+    this.setPendingEvents(next);
   }
 }

@@ -13,37 +13,83 @@ export class ConnectivityService {
   private lastOkAt = Date.now();
   private lastFailAt = 0;
 
+  private readonly OFFLINE_AFTER_MS = 25_000;
+  private readonly FAIL_DECAY_WINDOW_MS = 8_000;
+
+  constructor() {
+    try {
+      window.addEventListener('online', () => this.reportOk());
+      window.addEventListener('offline', () => this.forceOffline('BROWSER_OFFLINE'));
+
+      const c: any = (navigator as any)?.connection;
+      (this as any)._conn = c;
+
+      const onChange = () => {
+        const effectiveType = String(c?.effectiveType || '').toLowerCase();
+        const saveData = !!c?.saveData;
+        if (saveData || effectiveType.includes('2g') || effectiveType.includes('slow-2g')) {
+          if (this._state$.value === 'ONLINE') this._state$.next('DEGRADED');
+        }
+      };
+
+      if (c?.addEventListener) c.addEventListener('change', onChange);
+      else if (typeof c?.onchange !== 'undefined') c.onchange = onChange;
+    } catch {}
+  }
+
   get snapshot(): NetState {
     return this._state$.value;
   }
 
-  reportOk(latencyMs?: number): void {
+  reportOk(_latencyMs?: number): void {
     this.lastOkAt = Date.now();
     this.failStreak = 0;
-
-    // si venías de OFFLINE/DEGRADED, vuelve a ONLINE
     if (this._state$.value !== 'ONLINE') this._state$.next('ONLINE');
   }
 
-  reportFail(statusOrError?: any): void {
-    this.lastFailAt = Date.now();
+  reportFail(_statusOrError?: any): void {
+    const now = Date.now();
+
+    const prevFail = this.lastFailAt;
+    this.lastFailAt = now;
+
+    if (prevFail > 0 && (now - prevFail) > this.FAIL_DECAY_WINDOW_MS) {
+      this.failStreak = Math.max(0, this.failStreak - 1);
+    }
     this.failStreak = Math.min(50, this.failStreak + 1);
 
-    // reglas simples: 1-2 fallos => DEGRADED, muchos fallos => OFFLINE
-    const next: NetState = this.failStreak >= 4 ? 'OFFLINE' : 'DEGRADED';
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      this.forceOffline('NAV_OFFLINE');
+      return;
+    }
+
+    const sinceOk = now - this.lastOkAt;
+    const next: NetState =
+      sinceOk >= this.OFFLINE_AFTER_MS || this.failStreak >= 6 ? 'OFFLINE' : 'DEGRADED';
+
     if (this._state$.value !== next) this._state$.next(next);
   }
 
-  /** Backoff recomendado para SSE / reintentos controlados */
-  nextBackoffMs(base = 250, cap = 30_000): number {
-    const exp = Math.min(8, this.failStreak); // 2^0..2^8
+  private forceOffline(_reason?: string) {
+    this.lastFailAt = Date.now();
+    this.failStreak = Math.max(this.failStreak, 7);
+    if (this._state$.value !== 'OFFLINE') this._state$.next('OFFLINE');
+  }
+
+  nextBackoffMs(base = 350, cap = 30_000): number {
+    const exp = Math.min(9, this.failStreak);
     const raw = Math.min(cap, base * Math.pow(2, exp));
-    const jitter = 0.6 + Math.random() * 0.8; // 0.6..1.4
+    const jitter = 0.65 + Math.random() * 0.75;
     return Math.round(raw * jitter);
   }
 
-  /** Útil para pausar “insights/me/online” cuando el backend está mal */
+  /** En OFFLINE pause todo lo pesado; en DEGRADED siga, pero con menos agresividad (lo decide el caller). */
   shouldPauseHeavyWork(): boolean {
     return this.snapshot === 'OFFLINE';
+  }
+
+  /** Útil para “adaptar frecuencia” en DEGRADED. */
+  isDegraded(): boolean {
+    return this.snapshot === 'DEGRADED';
   }
 }

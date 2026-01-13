@@ -17,18 +17,18 @@ export class TipsService {
   private currentTopic: Topic = 'seguridad';
 
   getHint(topic: Topic): string {
-    if (topic === 'seguridad') return 'Tip corto de ciberseguridad. Ideal para compartir.';
-    if (topic === 'estudio') return 'Tip de estudio aplicable hoy. Rotación rápida.';
-    if (topic === 'productividad') return 'Acción simple para mejorar enfoque y resultados.';
-    return 'Higiene digital y descanso mental en pocos pasos.';
+    switch (topic) {
+      case 'seguridad': return 'Tip corto de ciberseguridad. Ideal para compartir.';
+      case 'estudio': return 'Tip de estudio aplicable hoy. Rotación rápida.';
+      case 'productividad': return 'Acción simple para mejorar enfoque y resultados.';
+      default: return 'Higiene digital y descanso mental en pocos pasos.';
+    }
   }
 
-  /** Fuente única del “topic actual” para servicios y App */
   getTopic(): Topic {
     return this.currentTopic;
   }
 
-  /** Cambia topic: 1 sola memoria + 1 solo SFX + 1 solo hint */
   setTopic(topic: Topic): void {
     this.currentTopic = topic;
 
@@ -38,7 +38,6 @@ export class TipsService {
     this.syncAudioFromMind();
   }
 
-  /** Elige tip: actualiza history + stats(seen) + mind + SFX (sin duplicar en App) */
   nextTip(topic: Topic): Tip {
     this.currentTopic = topic;
 
@@ -48,13 +47,9 @@ export class TipsService {
 
     const tip = this.ranker.pickBest(topic, TIPS, history, stats, ctx);
 
-    // ✅ 1) no repetir + historial
     this.storage.pushTipHistoryId(tip.id, 40);
-
-    // ✅ 2) seen SOLO aquí (evita doble bump en App)
     this.storage.bumpTipStat(tip.id, 'seen');
 
-    // ✅ 3) mente + SFX SOLO aquí
     this.mind.ingest('NEW_TIP', topic, true, { tipId: tip.id, title: tip.title });
     void this.audio.sfx('NEW_TIP');
 
@@ -62,7 +57,6 @@ export class TipsService {
     return tip;
   }
 
-  /** Registre like/dislike desde UI si aplica (opcional) */
   likeTip(tip: Tip): void {
     this.mind.ingest('TIP_LIKE', tip.topic, true, { tipId: tip.id });
     this.syncAudioFromMind();
@@ -73,7 +67,6 @@ export class TipsService {
     this.syncAudioFromMind();
   }
 
-  /** Copia: App decide si fue OK; aquí se registra estado + stats + SFX 1 vez */
   copyTip(tip: Tip, ok: boolean): void {
     if (ok) this.storage.bumpTipStat(tip.id, 'copied');
 
@@ -83,7 +76,6 @@ export class TipsService {
     this.syncAudioFromMind();
   }
 
-  /** Compartir: App decide si fue OK; aquí se registra estado + stats + SFX 1 vez */
   shareTip(tip: Tip, ok: boolean, channel?: string): void {
     if (ok) this.storage.bumpTipStat(tip.id, 'shared');
 
@@ -93,25 +85,34 @@ export class TipsService {
     this.syncAudioFromMind();
   }
 
-  /** Señales del sistema (audio bloqueado / SSE) */
   audioBlocked(): void {
     this.mind.ingest('AUDIO_BLOCKED', this.currentTopic, false);
 
-    // modo “semántico” solo para SFX
-    this.audio.setHint({ mode: 'REDUCED', stressScore: 0.75, focusScore: 0.35 });
+    // ✅ modo reducido y baja intensidad
+    this.audio.setHint({
+      mode: 'REDUCED',
+      stressScore: 0.75,
+      focusScore: 0.35,
+      audioIntensity: 0.25,
+    });
   }
 
   sseDown(): void {
     this.mind.ingest('SSE_DOWN', this.currentTopic, false);
     void this.audio.sfx('SSE_DOWN', { strength: 0.9 });
 
-    this.audio.setHint({ mode: 'REST', stressScore: 0.7, focusScore: 0.35 });
+    // ✅ descanso, baja intensidad
+    this.audio.setHint({
+      mode: 'REST',
+      stressScore: 0.7,
+      focusScore: 0.35,
+      audioIntensity: 0.35,
+    });
   }
 
   sseUp(): void {
     this.mind.ingest('SSE_UP', this.currentTopic, true);
     void this.audio.sfx('SSE_UP', { strength: 0.9 });
-
     this.syncAudioFromMind();
   }
 
@@ -143,12 +144,23 @@ export class TipsService {
     const hint = this.mind.getAudioHint(s);
 
     const mode =
-      s.mood === 'stressed' ? 'REST' : s.mood === 'tired' ? 'REDUCED' : s.mood === 'focused' ? 'FOCUS' : 'NORMAL';
+      s.mood === 'stressed' ? 'REST'
+      : s.mood === 'tired' ? 'REDUCED'
+      : s.mood === 'focused' ? 'FOCUS'
+      : 'NORMAL';
+
+    // ✅ Intensidad base por modo + estado
+    const audioIntensity =
+      mode === 'FOCUS' ? 0.95 :
+      mode === 'NORMAL' ? 0.85 :
+      mode === 'REDUCED' ? 0.55 :
+      0.45; // REST
 
     this.audio.setHint({
       mode,
       focusScore: hint.focusScore,
       stressScore: hint.stressScore,
+      audioIntensity,
     });
   }
 }

@@ -70,3 +70,16 @@ export type VisitInsightsResponse = {
   engagedSecondsLast7: number;
   sessionsLast7: number;
 };
+
+// src/app/models/models.ts (AGREGAR al final)
+
+export type LinkIssueResponse = {
+  page: string;
+  code: string;
+  ttlSec: number;
+};
+
+export type LinkConsumeResponse = {
+  vid: string;
+  exp: number;
+};

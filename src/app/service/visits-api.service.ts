@@ -1,94 +1,98 @@
 // src/app/service/visits-api.service.ts
-import { Injectable, inject } from '@angular/core';
-import { StorageService } from './storage.service';
-import { ConnectivityService } from './connectivity.service';
+import { Injectable } from '@angular/core';
+import { environment } from '../../environments/environment';
 
-export type ApiResult<T> = {
-  data: T | null;
-  visitorId?: string;
-  status: number;
+export type ApiEnvelope<T> = {
+  status: number; // 200.., 401/403/429, 0 = red/timeout
+  visitorId?: string; // X-Visitor-Id del backend (si viene)
+  data?: T | null;
+  error?: any;
 };
+
+export type ApiResult<T> = ApiEnvelope<T>;
 
 export type VisitEventRequest = {
   page: string;
-  type: 'NEW_TIP' | 'COPY_TIP' | 'SHARE_TIP' | 'TOPIC';
+  type: string;
   topic?: string | null;
   ref?: string | null;
   meta?: Record<string, any>;
 };
 
 type FetchPolicy = {
-  timeoutMs?: number;              // corta fetch colgado (backend saturado)
-  dedupe?: boolean;                // evita duplicar requests iguales en vuelo
-  cacheTtlMs?: number;             // cachea GET (me/insights/online/total)
-  allowStaleOnError?: boolean;     // si falla backend, devuelve último cache
-  cacheKey?: string;               // clave custom si deseas
+  timeoutMs?: number;
+  dedupe?: boolean;
+  dedupeKey?: string;            // clave estable opcional
+  cacheTtlMs?: number;
+  allowStaleOnError?: boolean;
+  withCredentials?: boolean;
+  includeVidInKey?: boolean;     // ✅ por defecto true para endpoints dependientes del VID
 };
 
-type CacheEntry = { exp: number; value: any };
+type CacheEntry = { ts: number; value: any };
 
 @Injectable({ providedIn: 'root' })
 export class VisitsApiService {
-  private storage = inject(StorageService);
-  private net = inject(ConnectivityService);
+  private readonly API_BASE = String((environment as any).apiBase || '').replace(/\/$/, '');
 
-  private readonly API_BASE =
-    (window as any).__SB_API_BASE__ ||
-    'https://api.systemblacklem.com';
+  private inflight = new Map<string, Promise<ApiEnvelope<any> | null>>();
+  private cache = new Map<string, CacheEntry>();
 
-  // caché en memoria (rápido)
-  private memCache = new Map<string, CacheEntry>();
-
-  // requests en vuelo (dedupe)
-  private inflight = new Map<string, Promise<any>>();
-
-  endpoints(pageKey: string, visitorId?: string) {
-    const page = encodeURIComponent(pageKey);
-    const vid = visitorId ? `&vid=${encodeURIComponent(visitorId)}` : '';
-    const qp = `?page=${page}${vid}`;
-
+  endpoints(pageKey: string) {
+    const q = encodeURIComponent(pageKey);
     return {
-      track: `${this.API_BASE}/api/public/visits/track${qp}`,
-      me: `${this.API_BASE}/api/public/visits/me${qp}`,
-      insights: `${this.API_BASE}/api/public/visits/insights/me${qp}`,
+      issue: `${this.API_BASE}/api/public/visits/issue?page=${q}`,
+      track: `${this.API_BASE}/api/public/visits/track?page=${q}`,
+      me: `${this.API_BASE}/api/public/visits/me?page=${q}`,
+      insights: `${this.API_BASE}/api/public/visits/insights/me?page=${q}`,
+      total: `${this.API_BASE}/api/public/visits/total?page=${q}`,
+      online: `${this.API_BASE}/api/public/visits/online?page=${q}`,
       event: `${this.API_BASE}/api/public/visits/event`,
-      stream: `${this.API_BASE}/api/public/visits/stream${qp}`,
-      online: `${this.API_BASE}/api/public/visits/online${qp}`,
-      total: `${this.API_BASE}/api/public/visits/total?page=${page}`,
+      linkIssue: `${this.API_BASE}/api/public/visits/link/issue?page=${q}`,
+      linkConsume: `${this.API_BASE}/api/public/visits/link/consume?page=${q}`,
     };
   }
 
-  private cacheGet<T>(key: string): T | null {
-    const now = Date.now();
-    const m = this.memCache.get(key);
-    if (m && m.exp > now) return m.value as T;
+  sseUrl = (pageKey: string, signedVid: string): string => {
+    const q = encodeURIComponent(pageKey);
+    const v = (signedVid || '').trim();
+    if (!v) return '';
+    // ✅ EventSource no permite headers, por eso /stream usa ?vid=
+    return `${this.API_BASE}/api/public/visits/stream?page=${q}&vid=${encodeURIComponent(v)}`;
+  };
 
-    // fallback localStorage (opcional, barato y seguro por try/catch)
-    try {
-      const raw = localStorage.getItem(`sb_http_cache::${key}`);
-      if (!raw) return null;
-      const parsed = JSON.parse(raw) as CacheEntry;
-      if (parsed?.exp > now) {
-        this.memCache.set(key, parsed);
-        return parsed.value as T;
-      }
-    } catch {}
-    return null;
+  openSse(url: string): EventSource {
+    return new EventSource(url);
   }
 
-  private cacheSet(key: string, value: any, ttlMs: number): void {
-    const exp = Date.now() + Math.max(200, ttlMs);
-    const entry: CacheEntry = { exp, value };
-    this.memCache.set(key, entry);
-    try {
-      localStorage.setItem(`sb_http_cache::${key}`, JSON.stringify(entry));
-    } catch {}
+  async issueVid(pageKey: string): Promise<ApiEnvelope<{ vid?: string; exp?: number }> | null> {
+    const url = this.endpoints(pageKey).issue;
+
+    const res = await this.apiFetch<{ vid?: string; exp?: number }>(
+      url,
+      '', // sin header => backend emite identidad
+      { method: 'GET' },
+      { timeoutMs: 6500, dedupe: true, cacheTtlMs: 0, allowStaleOnError: false, includeVidInKey: false }
+    );
+
+    const bodyVid = (res?.data as any)?.vid ? String((res!.data as any).vid) : '';
+    if (res && !res.visitorId && bodyVid) res.visitorId = bodyVid;
+
+    return res;
   }
 
-  private buildReqKey(url: string, visitorId: string, options: RequestInit): string {
-    const method = (options.method || 'GET').toUpperCase();
-    const body = typeof options.body === 'string' ? options.body : '';
-    return `${method}::${url}::vid=${visitorId || ''}::b=${body}`;
+  /** Llave estable: evita mezclar cache/dedupe entre identidades distintas */
+  private makeKey(method: string, url: string, policy: FetchPolicy, visitorId?: string): string {
+    const base = policy.dedupeKey ? `${method}::${url}::${policy.dedupeKey}` : `${method}::${url}`;
+    const include = policy.includeVidInKey !== false; // ✅ default true
+    if (!include) return base;
+
+    const vid = String(visitorId || '').trim();
+    if (!vid) return base;
+
+    // ✅ no metas el token completo (puede ser largo), usa un “fingerprint” corto
+    const fp = vid.length > 18 ? `${vid.slice(0, 10)}…${vid.slice(-6)}` : vid;
+    return `${base}::vid=${fp}`;
   }
 
   async apiFetch<T>(
@@ -96,148 +100,120 @@ export class VisitsApiService {
     visitorId: string,
     options: RequestInit = {},
     policy: FetchPolicy = {}
-  ): Promise<ApiResult<T>> {
+  ): Promise<ApiEnvelope<T> | null> {
     const method = (options.method || 'GET').toUpperCase();
-    const timeoutMs = policy.timeoutMs ?? 8_000;
+    const key = this.makeKey(method, url, policy, visitorId);
 
-    const headers = new Headers(options.headers || {});
-    if (visitorId) headers.set('X-Visitor-Id', visitorId);
-
-    if (options.body && !headers.has('Content-Type')) {
-      headers.set('Content-Type', 'application/json');
+    const ttl = Math.max(0, Number(policy.cacheTtlMs || 0));
+    if (ttl > 0) {
+      const c = this.cache.get(key);
+      if (c && Date.now() - c.ts <= ttl) return c.value as ApiEnvelope<T>;
     }
 
-    const reqKey = this.buildReqKey(url, visitorId, options);
-    const cacheKey = policy.cacheKey ?? reqKey;
-
-    // ✅ caché solo para GET
-    const canCache = method === 'GET' && (policy.cacheTtlMs ?? 0) > 0;
-
-    // si backend está OFFLINE, devuelve cache si existe (sin pegar a la red)
-    if (this.net.shouldPauseHeavyWork() && canCache) {
-      const cached = this.cacheGet<T>(cacheKey);
-      if (cached !== null) return { data: cached, status: 200, visitorId };
-      return { data: null, status: 0 };
+    if (policy.dedupe) {
+      const inF = this.inflight.get(key);
+      if (inF) return (await inF) as ApiEnvelope<T> | null;
     }
 
-    // ✅ dedupe: si ya hay request igual en vuelo, reutiliza promesa
-    if (policy.dedupe !== false) {
-      const existing = this.inflight.get(reqKey);
-      if (existing) return existing as Promise<ApiResult<T>>;
-    }
+    const run = (async () => {
+      const headers = new Headers(options.headers || {});
 
-    const run = (async (): Promise<ApiResult<T>> => {
-      // cache hit inmediato
-      if (canCache) {
-        const cached = this.cacheGet<T>(cacheKey);
-        if (cached !== null) return { data: cached, status: 200, visitorId };
+      const bodyIsString = typeof options.body === 'string';
+      if (!headers.has('Content-Type') && bodyIsString) {
+        headers.set('Content-Type', 'application/json');
       }
 
-      const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
-      const t0 = performance.now();
+      const vid = (visitorId || '').trim();
+      if (vid) headers.set('X-Visitor-Id', vid);
 
-      const timer = ctrl
-        ? window.setTimeout(() => ctrl.abort(), Math.max(800, timeoutMs))
-        : 0;
+      const ac = new AbortController();
+      const timeout = Math.max(900, Number(policy.timeoutMs || 6500));
+      const t = setTimeout(() => ac.abort(), timeout);
 
       try {
         const res = await fetch(url, {
-          cache: 'no-store',
           ...options,
           headers,
-          signal: ctrl?.signal,
+          signal: ac.signal,
+          cache: 'no-store',
+          credentials: policy.withCredentials ? 'include' : options.credentials ?? 'same-origin',
         });
 
-        const latency = Math.round(performance.now() - t0);
-        this.net.reportOk(latency);
+        const status = res.status;
+        const headerVid = res.headers.get('X-Visitor-Id') || undefined;
 
-        const vidHeader =
-          res.headers.get('X-Visitor-Id') ||
-          res.headers.get('X-VisitorId') ||
-          undefined;
-
-        if (vidHeader) this.storage.setVisitorId(vidHeader);
-
-        if (res.status === 204) return { data: null, visitorId: vidHeader, status: res.status };
-
-        const text = await res.text();
-        if (!text) return { data: null, visitorId: vidHeader, status: res.status };
-
-        let parsed: T | null = null;
-        try {
-          parsed = JSON.parse(text) as T;
-        } catch {
-          // si el backend devuelve texto no JSON, no rompas la app
-          parsed = null;
+        if (status === 204) {
+          const env: ApiEnvelope<T> = { status, visitorId: headerVid, data: null };
+          if (ttl > 0) this.cache.set(key, { ts: Date.now(), value: env });
+          return env;
         }
 
-        // cachea respuesta buena
-        if (canCache && res.ok && parsed !== null) {
-          this.cacheSet(cacheKey, parsed, policy.cacheTtlMs!);
+        const ct = (res.headers.get('content-type') || '').toLowerCase();
+        let data: any = null;
+
+        if (ct.includes('application/json')) {
+          try {
+            data = await res.json();
+          } catch {
+            data = null;
+          }
+        } else {
+          try {
+            data = await res.text();
+          } catch {
+            data = null;
+          }
         }
 
-        return { data: parsed, visitorId: vidHeader, status: res.status };
-      } catch (err: any) {
-        this.net.reportFail(err);
+        const env: ApiEnvelope<T> = {
+          status,
+          visitorId: headerVid,
+          data: (data as T) ?? null,
+          error: status >= 400 ? data : undefined,
+        };
 
-        // ✅ stale-on-error: si falla, entrega último cache si existe
-        if (canCache && policy.allowStaleOnError !== false) {
-          const cached = this.cacheGet<T>(cacheKey);
-          if (cached !== null) return { data: cached, status: 200, visitorId };
+        // ✅ cache solo respuestas OK
+        if (ttl > 0 && status >= 200 && status < 300) {
+          this.cache.set(key, { ts: Date.now(), value: env });
         }
-        return { data: null, status: 0 };
+
+        return env;
+      } catch (e: any) {
+        if (policy.allowStaleOnError && ttl > 0) {
+          const c = this.cache.get(key);
+          if (c) return c.value as ApiEnvelope<T>;
+        }
+        return { status: 0, visitorId: undefined, data: null, error: e } as ApiEnvelope<T>;
       } finally {
-        if (timer) window.clearTimeout(timer);
+        clearTimeout(t);
       }
     })();
 
-    if (policy.dedupe !== false) {
-      this.inflight.set(reqKey, run);
-      run.finally(() => this.inflight.delete(reqKey));
-    }
+    if (policy.dedupe) this.inflight.set(key, run);
+    const out = await run;
+    if (policy.dedupe) this.inflight.delete(key);
 
-    return run;
+    return out;
   }
 
-  /** ✅ Única forma recomendada de enviar eventos (NO cache / NO reintento agresivo). */
-  async sendEvent<TResp>(
-    pageKey: string,
-    payload: Omit<VisitEventRequest, 'page' | 'meta'> & { meta?: Record<string, any> }
-  ): Promise<ApiResult<TResp>> {
-    const visitorId = this.storage.getVisitorId();
-    const metaBase = this.storage.getClientMeta();
-
-    if (!payload?.type) return { data: null, status: 0 };
-
-    const req: VisitEventRequest = {
-      page: pageKey,
-      type: payload.type,
-      topic: payload.topic ?? null,
-      ref: payload.ref ?? null,
-      meta: {
-        tz: metaBase.tz,
-        tzOffsetMin: metaBase.tzOffsetMin,
-        lang: metaBase.lang,
-        ...payload.meta,
-      },
-    };
-
-    const url = this.endpoints(pageKey, visitorId).event;
-
-    // timeout corto para POST: si está saturado, no bloquees UI
-    return this.apiFetch<TResp>(url, visitorId, {
-      method: 'POST',
-      body: JSON.stringify(req),
-    }, {
-      timeoutMs: 4_500,
-      dedupe: false,
-      cacheTtlMs: 0,
-      allowStaleOnError: false,
-    });
+  async linkIssue(pageKey: string, vid: string) {
+    const url = this.endpoints(pageKey).linkIssue;
+    return this.apiFetch<{ page: string; code: string; ttlSec: number }>(
+      url,
+      vid,
+      { method: 'POST' },
+      { timeoutMs: 6500, dedupe: false, cacheTtlMs: 0, allowStaleOnError: false }
+    );
   }
 
-  openSse(url: string): EventSource {
-    // Nota: EventSource no permite headers; por eso ya incluyes vid/page en querystring.
-    return new EventSource(url);
+  async linkConsume(pageKey: string, code: string) {
+    const base = this.endpoints(pageKey).linkConsume;
+    const url = `${base}&code=${encodeURIComponent(code)}`;
+    return this.apiFetch<{ vid: string; exp: number }>(
+      url,
+      '', // consume no requiere header
+      { method: 'POST' },
+      { timeoutMs: 6500, dedupe: false, cacheTtlMs: 0, allowStaleOnError: false, includeVidInKey: false }
+    );
   }
 }
