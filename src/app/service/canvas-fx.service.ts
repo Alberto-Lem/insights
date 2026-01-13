@@ -19,8 +19,10 @@ export class CanvasFxService {
   private raf: number | null = null;
   private dots: Dot[] = [];
 
-  // ✅ nuevo: “expresión” del canvas por estado
   private mode: FxMode = 'soft';
+
+  // ✅ nuevo: evita listeners/RAF duplicados
+  private started = false;
 
   bind(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -29,14 +31,31 @@ export class CanvasFxService {
 
   /** Cambia el modo y reconfigura partículas sin reiniciar toda la app */
   setMode(m: FxMode) {
+    // ✅ no reinicializar si no cambió el modo
+    if (m === this.mode) return;
     this.mode = m;
+
+    // si aún no está listo el canvas, no haga trabajo
+    if (!this.canvas || !this.ctx) return;
+
     this.initDots();
   }
 
   start() {
+    // ✅ idempotente: si ya está iniciado, no duplicar
+    if (this.started) return;
+
+    // ✅ si no está bindeado, no inicie
+    if (!this.canvas || !this.ctx) return;
+
+    this.started = true;
+
     this.resize();
     this.initDots();
-    this.draw();
+
+    // ✅ asegure un solo RAF
+    if (!this.raf) this.draw();
+
     window.addEventListener('resize', this.onResize);
     document.addEventListener('visibilitychange', this.onVisibility);
   }
@@ -44,8 +63,12 @@ export class CanvasFxService {
   stop() {
     if (this.raf) cancelAnimationFrame(this.raf);
     this.raf = null;
-    window.removeEventListener('resize', this.onResize);
-    document.removeEventListener('visibilitychange', this.onVisibility);
+
+    if (this.started) {
+      window.removeEventListener('resize', this.onResize);
+      document.removeEventListener('visibilitychange', this.onVisibility);
+      this.started = false;
+    }
   }
 
   private getDpr() {
@@ -99,7 +122,7 @@ export class CanvasFxService {
   }
 
   private draw = () => {
-    if (!this.ctx) return;
+    if (!this.ctx || !this.canvas) return;
 
     this.ctx.clearRect(0, 0, innerWidth, innerHeight);
 
@@ -122,15 +145,24 @@ export class CanvasFxService {
   };
 
   private onResize = () => {
+    // si no está iniciado, no haga trabajo
+    if (!this.started) return;
+
     this.resize();
     this.initDots();
   };
 
   private onVisibility = () => {
+    if (!this.started) return;
+
     if (document.hidden && this.raf) {
       cancelAnimationFrame(this.raf);
       this.raf = null;
+      return;
     }
-    if (!document.hidden && !this.raf) this.draw();
+
+    if (!document.hidden && !this.raf) {
+      this.draw();
+    }
   };
 }

@@ -26,7 +26,7 @@ export type PendingVisitEvent = {
 export class StorageService {
   readonly PREF_KEY = 'sb_visits_prefs_v1';
   readonly HISTORY_KEY = 'sb_tip_history_v2';
-
+  readonly LAST_TIP_BY_TOPIC_KEY = 'sb_last_tip_by_topic_v1';
   readonly VISITOR_KEY_PREFIX = 'sb_visitor_id_v1:';
   readonly TIP_STATS_KEY = 'sb_tip_stats_v1';
 
@@ -135,7 +135,10 @@ export class StorageService {
   // ================= VisitorId (por page) =================
 
   private visitorKey(pageKey?: string): string {
-    const p = String(pageKey || 'visits').trim().toLowerCase() || 'visits';
+    const p =
+      String(pageKey || 'visits')
+        .trim()
+        .toLowerCase() || 'visits';
     return `${this.VISITOR_KEY_PREFIX}${p}`;
   }
 
@@ -158,7 +161,8 @@ export class StorageService {
 
   getClientMeta(): ClientMeta {
     const cached = this.safeGet<ClientMeta>(this.CLIENT_META_KEY);
-    if (cached && (cached.tz || cached.lang || typeof cached.tzOffsetMin === 'number')) return cached;
+    if (cached && (cached.tz || cached.lang || typeof cached.tzOffsetMin === 'number'))
+      return cached;
 
     const tz =
       (Intl?.DateTimeFormat?.().resolvedOptions?.().timeZone as string | undefined) || undefined;
@@ -175,6 +179,23 @@ export class StorageService {
 
   setClientMeta(m: ClientMeta): void {
     this.safeSet(this.CLIENT_META_KEY, m);
+  }
+
+  // ✅ Tip “sticky” por topic (persistente)
+  getLastTipByTopic<TTip = any>(): Partial<Record<Topic, TTip>> {
+    return this.safeGet<Partial<Record<Topic, TTip>>>(this.LAST_TIP_BY_TOPIC_KEY) ?? {};
+  }
+
+  setLastTipForTopic<TTip = any>(topic: Topic, tip: TTip): void {
+    if (!topic || !tip) return;
+    const all = this.getLastTipByTopic<TTip>();
+    all[topic] = tip;
+    this.safeSetThrottled(this.LAST_TIP_BY_TOPIC_KEY, all, 450);
+  }
+
+  getLastTipForTopic<TTip = any>(topic: Topic): TTip | null {
+    const all = this.getLastTipByTopic<TTip>();
+    return (all?.[topic] as TTip) ?? null;
   }
 
   // ================= Mind =================

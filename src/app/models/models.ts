@@ -9,22 +9,6 @@ export type Tip = {
   tags?: readonly string[];
 };
 
-export type Profile = {
-  total?: number;
-  streak?: number;
-  level?: number;
-  xp?: number;
-};
-
-export type Pair = { key: string; value: number };
-
-export type Insights = {
-  activeDaysLast7?: number;
-  actionCountsLast7?: Pair[];
-  peakHoursLast7?: Pair[];
-  _ts?: number;
-};
-
 export type TipContext = {
   hour: number;          // 0-23
   day: number;           // 0-6 (Dom=0)
@@ -32,14 +16,17 @@ export type TipContext = {
   bucket: 'morning' | 'afternoon' | 'evening' | 'night';
 };
 
+export type Pair = { key: string; value: number };
+
 export type TipStat = {
   seen: number;
   copied: number;
   shared: number;
-  lastSeen?: number; 
+  lastSeen?: number;
 };
 
 export type TipStatsMap = Record<string, TipStat>;
+
 export type VisitProfileResponse = {
   page: string;
   totalTodayUnique: number;
@@ -70,8 +57,6 @@ export type VisitInsightsResponse = {
   engagedSecondsLast7: number;
   sessionsLast7: number;
 };
-
-// src/app/models/models.ts (AGREGAR al final)
 
 export type LinkIssueResponse = {
   page: string;

@@ -107,6 +107,8 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
   private tFlush?: ReturnType<typeof setInterval>;
 
   private tBumpReset?: ReturnType<typeof setTimeout>;
+  //cache por topic (sticky tip)
+  private lastTipByTopic: Partial<Record<Topic, TipWithId>> = {};
 
   private mindSub?: Subscription;
   private sseSub?: Subscription;
@@ -287,15 +289,31 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     const next = (t || '').toString().trim() as Topic;
     if (!next) return;
 
+    const prev = this.topic;
+    const changed = next !== prev;
+
+    // ✅ Cambiar topic siempre (para UI/mind/audio), pero no rotar tip aquí
     this.topic = next;
     this.tipsSrv.setTopic(next);
 
-    const prefs = this.storage.getPrefs();
-    this.storage.setPrefs({ ...prefs, topic: next });
+    // ✅ Persistir preferencia + emitir evento SOLO si cambió topic
+    if (changed) {
+      const prefs = this.storage.getPrefs();
+      this.storage.setPrefs({ ...prefs, topic: next });
+      await this.emitVisitEvent('TOPIC', { topic: next });
+    }
 
-    // ✅ emitir al backend (cola + envío)
-    await this.emitVisitEvent('TOPIC', { topic: next });
+    // ✅ STICKY: mostrar el tip guardado para ese topic (sin generar uno nuevo)
+    const cached = this.lastTipByTopic[next] ?? this.storage.getLastTipForTopic<TipWithId>(next);
 
+    if (cached) {
+      this.currentTip = cached;
+      this.bumpCardState('TOPIC');
+      this.ui();
+      return;
+    }
+
+    // ✅ Primera vez en ese topic: generar UNO inicial, persistirlo, y mostrarlo
     this.pickNewTip();
     this.bumpCardState('TOPIC');
     this.ui();
@@ -309,7 +327,9 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
       return;
     }
 
+    // ✅ Solo aquí rota tip
     this.pickNewTip();
+
     const tipId = this.getTipId(this.currentTip) || null;
 
     await this.emitVisitEvent('NEW_TIP', {
@@ -409,6 +429,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     this.visitorId = String(this.storage.getVisitorId(this.PAGE_KEY) || '').trim();
     this.buildProfileUI(this.visitorId);
 
+    // ✅ 1) Prefs (topic + music)
     const prefs = this.storage.getPrefs();
     this.topic = (prefs.topic ?? 'seguridad') as Topic;
     this.historyCount = this.storage.getTipHistoryIds().length;
@@ -416,6 +437,10 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     const ms = (prefs as any)?.musicState;
     if (ms === 'ON' || ms === 'OFF' || ms === 'AUTO') this.audioSrv.state = ms;
 
+    // ✅ 2) Cargar “sticky tips” persistidos (NO RAM solamente)
+    this.lastTipByTopic = this.storage.getLastTipByTopic<TipWithId>() ?? {};
+
+    // ✅ 3) Suscripción a Mind (mood/tono/audio)
     this.mindSub = this.mind.observe().subscribe((state) => {
       this.fx.setMode(this.mind.getFxMode(state.mood));
       this.hint = this.mind.getToneLine(state, this.topic);
@@ -423,7 +448,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
       this.ui();
     });
 
-    // SSE estado
+    // ✅ 4) SSE alive / online / profile / insights / decision / total
     this.sseSub = this.sse.alive$.subscribe((alive) => {
       this.sseAlive = alive;
       if (alive) this.tipsSrv.sseUp();
@@ -441,7 +466,6 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
       this.ui();
     });
 
-    // ✅ NUEVO: streams de backend (profile/insights/decision/total)
     this.sseProfileSub = this.sse.profile$.subscribe((p) => {
       if (!p) return;
       const prevLevel = Number((this.profile as any)?.level ?? 0);
@@ -475,8 +499,18 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
       this.ui();
     });
 
+    // ✅ 5) Mantener mind/audio alineado con el topic actual
     this.tipsSrv.setTopic(this.topic);
-    this.pickNewTip();
+
+    // ✅ 6) Restaurar tip sticky del topic actual (sin generar NEW_TIP al recargar)
+    const cached =
+      this.lastTipByTopic[this.topic] ?? this.storage.getLastTipForTopic<TipWithId>(this.topic);
+    if (cached) {
+      this.currentTip = cached;
+    } else {
+      // Primera visita: generar 1 tip inicial y persistirlo
+      this.pickNewTip();
+    }
 
     this.updateCardVisuals();
     this.ui();
@@ -706,15 +740,16 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     if (this.isSignedVid(latest)) this.syncVisitorId(latest);
     if (!this.isSignedVid(this.visitorId)) return;
 
-    // ✅ única vía: OfflineSyncService.trackEvent
     await this.sync.trackEvent(this.PAGE_KEY, {
       type,
       topic: this.topic,
-      ref: meta?.['ref'] ?? null,
-      meta: { ...(meta ?? {}), ref: this.ref }, // ref de URL
+      ref: meta?.['ref'] ?? null, // ✅ ref = tipId (solo tip)
+      meta: {
+        ...(meta ?? {}),
+        urlRef: this.ref, // ✅ antes era meta.ref (colisión)
+      },
     });
 
-    // fallback pull suave (si SSE no responde)
     if (!this.sseAlive) {
       await this.loadMeSafe();
       await this.loadTotalSafe();
@@ -736,8 +771,18 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
   }
 
   private pickNewTip() {
+    // ✅ Genera el siguiente tip según ranking/historial
     this.currentTip = this.tipsSrv.nextTip(this.topic) as TipWithId;
     this.historyCount = this.storage.getTipHistoryIds().length;
+
+    // ✅ Mantener cache RAM alineado
+    if (this.currentTip) {
+      this.lastTipByTopic[this.topic] = this.currentTip;
+
+      // ✅ Persistir a localStorage para que NO cambie al recargar
+      this.storage.setLastTipForTopic(this.topic, this.currentTip);
+    }
+
     if (this.userInteracted) navigator.vibrate?.(18);
   }
 
@@ -890,7 +935,8 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
 
     if (this.tBumpReset) clearTimeout(this.tBumpReset);
     this.tBumpReset = setTimeout(() => {
-      this.cardState = 'IDLE';
+      // ✅ al finalizar el “bump”, regresar al estado base real
+      this.cardState = this.sseAlive ? 'LISTEN' : 'IDLE';
       this.syncHostClass();
       this.ui();
     }, 900);
