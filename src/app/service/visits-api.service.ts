@@ -11,22 +11,29 @@ export type ApiEnvelope<T> = {
 
 export type ApiResult<T> = ApiEnvelope<T>;
 
+/** ✅ Meta estandarizada: llaves conocidas + extras permitidos */
+export type VisitEventMeta = {
+  ts?: number;
+  tz?: string;
+  [k: string]: any; // permite extras sin pelear con TS
+};
+
 export type VisitEventRequest = {
   page: string;
-  type: string;
+  type: string; // "TIP_VIEW" | "NEW_TIP" | "COPY_TIP" | "SHARE_TIP" | "TOPIC"
   topic?: string | null;
-  ref?: string | null;
-  meta?: Record<string, any>;
+  ref?: string | null; // aquí mande tipId, o ref de UI, etc.
+  meta?: VisitEventMeta;
 };
 
 type FetchPolicy = {
   timeoutMs?: number;
   dedupe?: boolean;
-  dedupeKey?: string;            // clave estable opcional
+  dedupeKey?: string;
   cacheTtlMs?: number;
   allowStaleOnError?: boolean;
   withCredentials?: boolean;
-  includeVidInKey?: boolean;     // ✅ por defecto true para endpoints dependientes del VID
+  includeVidInKey?: boolean;
 };
 
 type CacheEntry = { ts: number; value: any };
@@ -37,6 +44,9 @@ export class VisitsApiService {
 
   private inflight = new Map<string, Promise<ApiEnvelope<any> | null>>();
   private cache = new Map<string, CacheEntry>();
+
+  // ✅ anti-spam simple para TIP_VIEW (por vid+page+ref)
+  private tipViewSeen = new Map<string, number>();
 
   endpoints(pageKey: string) {
     const q = encodeURIComponent(pageKey);
@@ -57,7 +67,7 @@ export class VisitsApiService {
     const q = encodeURIComponent(pageKey);
     const v = (signedVid || '').trim();
     if (!v) return '';
-    // ✅ EventSource no permite headers, por eso /stream usa ?vid=
+    // EventSource no permite headers => stream usa ?vid=
     return `${this.API_BASE}/api/public/visits/stream?page=${q}&vid=${encodeURIComponent(v)}`;
   };
 
@@ -65,32 +75,103 @@ export class VisitsApiService {
     return new EventSource(url);
   }
 
+  /** 1) emitir/obtener VID (token firmado) */
   async issueVid(pageKey: string): Promise<ApiEnvelope<{ vid?: string; exp?: number }> | null> {
     const url = this.endpoints(pageKey).issue;
 
     const res = await this.apiFetch<{ vid?: string; exp?: number }>(
       url,
-      '', // sin header => backend emite identidad
+      '',
       { method: 'GET' },
       { timeoutMs: 6500, dedupe: true, cacheTtlMs: 0, allowStaleOnError: false, includeVidInKey: false }
     );
 
+    // backend puede devolver vid en header o body
     const bodyVid = (res?.data as any)?.vid ? String((res!.data as any).vid) : '';
     if (res && !res.visitorId && bodyVid) res.visitorId = bodyVid;
 
     return res;
   }
 
+  /** 2) track: cuenta visita y devuelve perfil */
+  async track<TProfile = any>(pageKey: string, vid: string): Promise<ApiEnvelope<TProfile> | null> {
+    const url = this.endpoints(pageKey).track;
+    return this.apiFetch<TProfile>(
+      url,
+      vid,
+      { method: 'GET' },
+      { timeoutMs: 6500, dedupe: false, cacheTtlMs: 0, allowStaleOnError: false }
+    );
+  }
+
+  /** 3) event genérico */
+  async event<TResp = any>(req: VisitEventRequest, vid: string): Promise<ApiEnvelope<TResp> | null> {
+    const url = this.endpoints(req.page).event;
+
+    const payload: VisitEventRequest = {
+      page: req.page,
+      type: req.type,
+      topic: req.topic ?? null,
+      ref: req.ref ?? null,
+      meta: {
+        ...(req.meta || {}),
+        // ✅ meta estándar (tiempo + tz) para insights
+        ts: typeof req.meta?.ts === 'number' ? req.meta.ts : Date.now(),
+        tz: typeof req.meta?.tz === 'string' ? req.meta.tz : Intl.DateTimeFormat().resolvedOptions().timeZone,
+      },
+    };
+
+    return this.apiFetch<TResp>(
+      url,
+      vid,
+      { method: 'POST', body: JSON.stringify(payload) },
+      { timeoutMs: 6500, dedupe: false, cacheTtlMs: 0, allowStaleOnError: false }
+    );
+  }
+
+  /** 4) TIP_VIEW: se dispara cuando el tip realmente se renderiza */
+  async tipView(pageKey: string, vid: string, tipId: string, meta?: VisitEventMeta) {
+    const ref = String(tipId || '').trim();
+    if (!ref) return null;
+
+    // ✅ evitar spam: no enviar el mismo TIP_VIEW muy seguido
+    const key = `${pageKey}::${ref}::${(vid || '').slice(0, 16)}`;
+    const now = Date.now();
+    const last = this.tipViewSeen.get(key) || 0;
+    if (now - last < 2500) return null; // 2.5s anti-duplicado
+    this.tipViewSeen.set(key, now);
+
+    return this.event({ page: pageKey, type: 'TIP_VIEW', ref, meta }, vid);
+  }
+
+  /** COPY_TIP */
+  async copyTip(pageKey: string, vid: string, tipId: string, meta?: VisitEventMeta) {
+    const ref = String(tipId || '').trim();
+    if (!ref) return null;
+    return this.event({ page: pageKey, type: 'COPY_TIP', ref, meta }, vid);
+  }
+
+  /** SHARE_TIP */
+  async shareTip(pageKey: string, vid: string, tipId: string, meta?: VisitEventMeta) {
+    const ref = String(tipId || '').trim();
+    if (!ref) return null;
+    return this.event({ page: pageKey, type: 'SHARE_TIP', ref, meta }, vid);
+  }
+
+  /** TOPIC (si el usuario cambia tema) */
+  async setTopic(pageKey: string, vid: string, topic: string, meta?: VisitEventMeta) {
+    return this.event({ page: pageKey, type: 'TOPIC', topic, meta }, vid);
+  }
+
   /** Llave estable: evita mezclar cache/dedupe entre identidades distintas */
   private makeKey(method: string, url: string, policy: FetchPolicy, visitorId?: string): string {
     const base = policy.dedupeKey ? `${method}::${url}::${policy.dedupeKey}` : `${method}::${url}`;
-    const include = policy.includeVidInKey !== false; // ✅ default true
+    const include = policy.includeVidInKey !== false; // default true
     if (!include) return base;
 
     const vid = String(visitorId || '').trim();
     if (!vid) return base;
 
-    // ✅ no metas el token completo (puede ser largo), usa un “fingerprint” corto
     const fp = vid.length > 18 ? `${vid.slice(0, 10)}…${vid.slice(-6)}` : vid;
     return `${base}::vid=${fp}`;
   }
@@ -117,8 +198,8 @@ export class VisitsApiService {
 
     const run = (async () => {
       const headers = new Headers(options.headers || {});
-
       const bodyIsString = typeof options.body === 'string';
+
       if (!headers.has('Content-Type') && bodyIsString) {
         headers.set('Content-Type', 'application/json');
       }
@@ -172,7 +253,6 @@ export class VisitsApiService {
           error: status >= 400 ? data : undefined,
         };
 
-        // ✅ cache solo respuestas OK
         if (ttl > 0 && status >= 200 && status < 300) {
           this.cache.set(key, { ts: Date.now(), value: env });
         }
@@ -211,7 +291,7 @@ export class VisitsApiService {
     const url = `${base}&code=${encodeURIComponent(code)}`;
     return this.apiFetch<{ vid: string; exp: number }>(
       url,
-      '', // consume no requiere header
+      '',
       { method: 'POST' },
       { timeoutMs: 6500, dedupe: false, cacheTtlMs: 0, allowStaleOnError: false, includeVidInKey: false }
     );

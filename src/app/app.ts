@@ -17,6 +17,7 @@ import { Subscription } from 'rxjs';
 
 import { StorageService } from './service/storage.service';
 import { TipsService } from './service/tips.service';
+import { TipsApiService, SecurityTip } from './service/tips-api.service';
 import { VisitsApiService } from './service/visits-api.service';
 import { CanvasFxService } from './service/canvas-fx.service';
 import { MindService } from './service/mind.service';
@@ -25,11 +26,17 @@ import { OfflineSyncService } from './service/offline-sync.service';
 import { ConnectivityService } from './service/connectivity.service';
 import { SseService, VisitDecisionResponse } from './service/sse.service';
 
-import { Tip, Topic, VisitInsightsResponse, VisitProfileResponse } from './models/models';
+import { Pair, Tip, Topic, VisitInsightsResponse, VisitProfileResponse } from './models/models';
 import { getRefFromUrl } from './utils/utils';
 import { BumpKind, bumpToState, computeCardVisuals } from './ui/card-visuals';
 
-type TipWithId = Tip & { id?: string; _id?: string };
+type TipWithId = Tip & {
+  id?: string;
+  _id?: string;
+  nivel?: number;
+  tags?: string[];
+  activo?: boolean;
+};
 type VisitEventType = 'NEW_TIP' | 'COPY_TIP' | 'SHARE_TIP' | 'TOPIC';
 
 const DEFAULT_DECISION: VisitDecisionResponse = {
@@ -57,6 +64,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
   private sync = inject(OfflineSyncService);
   private storage = inject(StorageService);
   private tipsSrv = inject(TipsService);
+  private tipsApi = inject(TipsApiService);
   private api = inject(VisitsApiService);
   private fx = inject(CanvasFxService);
   private mind = inject(MindService);
@@ -107,7 +115,8 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
   private tFlush?: ReturnType<typeof setInterval>;
 
   private tBumpReset?: ReturnType<typeof setTimeout>;
-  //cache por topic (sticky tip)
+
+  // cache por topic (sticky tip)
   private lastTipByTopic: Partial<Record<Topic, TipWithId>> = {};
 
   private mindSub?: Subscription;
@@ -131,6 +140,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
   cardState: 'IDLE' | 'LISTEN' | 'THINK' | 'SPEAK' = 'IDLE';
 
   private userInteracted = false;
+  private destroyed = false;
 
   private readonly TRACK_FLAG_PREFIX = 'sb_tracked_today::';
 
@@ -140,6 +150,9 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     const tier = this.cardSkinClass || 'tier-bronze';
     const state = `state-${(this.cardState || 'IDLE').toLowerCase()}`;
     this.hostClass = `appRoot ${tier} ${state}`;
+  }
+  get difficultyView(): string {
+    return this.difficultyLabel((this.currentTip as any)?.nivel);
   }
 
   get musicState() {
@@ -197,10 +210,8 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
   async copyVisitorId(): Promise<void> {
     this.userInteracted = true;
 
-    // ✅ Copiar SOLO un identificador público seguro (alias), NO el token firmado
     const safeId =
       String(this.visitorAlias || '').trim() || String(this.visitorIdShort || '').trim();
-
     if (!safeId) {
       this.toast('Aún no hay ID público disponible.');
       this.mind.ingest('ERROR', this.topic, false, {
@@ -213,14 +224,11 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     try {
       await navigator.clipboard.writeText(safeId);
       this.toast('ID público copiado.');
-
-      // ✅ Evento correcto (no COPY_TIP)
       this.mind.ingest('COPY_VISITOR_ID', this.topic, true, {
         what: 'publicVisitorId',
         value: safeId,
       });
     } catch (e: any) {
-      // Fallback por si clipboard falla (Safari/permiso)
       try {
         const ok = this.legacyCopyToClipboard(safeId);
         if (ok) {
@@ -243,7 +251,6 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     }
   }
 
-  /** Fallback clásico (cuando navigator.clipboard no está disponible o falla). */
   private legacyCopyToClipboard(text: string): boolean {
     const ta = document.createElement('textarea');
     ta.value = text;
@@ -275,7 +282,6 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     const prefs = this.storage.getPrefs();
     this.storage.setPrefs({ ...prefs, musicState: next });
 
-    // ✅ gesto real: desbloquea audio aquí
     await this.audioSrv.userKick();
 
     this.toast(`Audio: ${next}`);
@@ -292,20 +298,16 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     const prev = this.topic;
     const changed = next !== prev;
 
-    // ✅ Cambiar topic siempre (para UI/mind/audio), pero no rotar tip aquí
     this.topic = next;
     this.tipsSrv.setTopic(next);
 
-    // ✅ Persistir preferencia + emitir evento SOLO si cambió topic
     if (changed) {
       const prefs = this.storage.getPrefs();
       this.storage.setPrefs({ ...prefs, topic: next });
       await this.emitVisitEvent('TOPIC', { topic: next });
     }
 
-    // ✅ STICKY: mostrar el tip guardado para ese topic (sin generar uno nuevo)
     const cached = this.lastTipByTopic[next] ?? this.storage.getLastTipForTopic<TipWithId>(next);
-
     if (cached) {
       this.currentTip = cached;
       this.bumpCardState('TOPIC');
@@ -313,8 +315,14 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
       return;
     }
 
-    // ✅ Primera vez en ese topic: generar UNO inicial, persistirlo, y mostrarlo
-    this.pickNewTip();
+    // ✅ Backend-first: obtener tip desde el backend (si hay VID válido); si no, esperar a ngAfterViewInit
+
+    const ok = await this.pickNewTipFromBackend(next);
+    if (!ok) {
+      this.toast('No se pudo obtener tip (sin sesión o sin conexión).');
+      return;
+    }
+
     this.bumpCardState('TOPIC');
     this.ui();
   }
@@ -327,8 +335,11 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
       return;
     }
 
-    // ✅ Solo aquí rota tip
-    this.pickNewTip();
+    const ok = await this.pickNewTipFromBackend(this.topic);
+    if (!ok) {
+      this.toast('No se pudo obtener tip (verifique conexión).');
+      return;
+    }
 
     const tipId = this.getTipId(this.currentTip) || null;
 
@@ -357,18 +368,17 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
       await navigator.clipboard.writeText(text);
       this.toast('Tip copiado.');
 
-      // ✅ stats/mind/audio: TipsService es fuente única
       this.tipsSrv.copyTip(tip as any, true);
-
       await this.emitVisitEvent('COPY_TIP', { ref: tipId });
 
       this.bumpCardState('COPY_TIP');
       this.ui();
-    } catch (e) {
+    } catch {
       this.toast('No se pudo copiar (permiso del navegador).');
       this.tipsSrv.copyTip(tip as any, false);
     }
   }
+
   async onShare(): Promise<void> {
     this.userInteracted = true;
 
@@ -386,7 +396,6 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     const tipId = this.getTipId(tip) || 'unknown';
     const text = this.formatTipForCopy(tip);
 
-    // ✅ type-guard correcto (evita TS2774)
     const canNativeShare = typeof (navigator as any)?.share === 'function';
 
     try {
@@ -406,15 +415,12 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
         this.toast('Copiado para compartir.');
       }
 
-      // ✅ 1 sola fuente para stats/mind/audio
       this.tipsSrv.shareTip(tip as any, true, channel);
-
-      // ✅ backend aligned
       await this.emitVisitEvent('SHARE_TIP', { ref: tipId });
 
       this.bumpCardState('SHARE_TIP');
       this.ui();
-    } catch (e) {
+    } catch {
       this.toast('No se pudo compartir.');
       this.tipsSrv.shareTip(tip as any, false);
     }
@@ -429,7 +435,6 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     this.visitorId = String(this.storage.getVisitorId(this.PAGE_KEY) || '').trim();
     this.buildProfileUI(this.visitorId);
 
-    // ✅ 1) Prefs (topic + music)
     const prefs = this.storage.getPrefs();
     this.topic = (prefs.topic ?? 'seguridad') as Topic;
     this.historyCount = this.storage.getTipHistoryIds().length;
@@ -437,10 +442,8 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     const ms = (prefs as any)?.musicState;
     if (ms === 'ON' || ms === 'OFF' || ms === 'AUTO') this.audioSrv.state = ms;
 
-    // ✅ 2) Cargar “sticky tips” persistidos (NO RAM solamente)
     this.lastTipByTopic = this.storage.getLastTipByTopic<TipWithId>() ?? {};
 
-    // ✅ 3) Suscripción a Mind (mood/tono/audio)
     this.mindSub = this.mind.observe().subscribe((state) => {
       this.fx.setMode(this.mind.getFxMode(state.mood));
       this.hint = this.mind.getToneLine(state, this.topic);
@@ -448,7 +451,6 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
       this.ui();
     });
 
-    // ✅ 4) SSE alive / online / profile / insights / decision / total
     this.sseSub = this.sse.alive$.subscribe((alive) => {
       this.sseAlive = alive;
       if (alive) this.tipsSrv.sseUp();
@@ -499,18 +501,12 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
       this.ui();
     });
 
-    // ✅ 5) Mantener mind/audio alineado con el topic actual
     this.tipsSrv.setTopic(this.topic);
 
-    // ✅ 6) Restaurar tip sticky del topic actual (sin generar NEW_TIP al recargar)
+    // ✅ Tip sticky (solo lectura). Si no existe, lo pedimos en ngAfterViewInit cuando ya exista VID válido.
     const cached =
       this.lastTipByTopic[this.topic] ?? this.storage.getLastTipForTopic<TipWithId>(this.topic);
-    if (cached) {
-      this.currentTip = cached;
-    } else {
-      // Primera visita: generar 1 tip inicial y persistirlo
-      this.pickNewTip();
-    }
+    if (cached) this.currentTip = cached;
 
     this.updateCardVisuals();
     this.ui();
@@ -522,8 +518,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
       this.fx.start();
     }
 
-    // Handshake único
-    await this.sync.handshakeAndFlush(this.PAGE_KEY);
+    await this.safeHandshake();
 
     this.visitorId = String(this.storage.getVisitorId(this.PAGE_KEY) || '').trim();
     this.buildProfileUI(this.visitorId);
@@ -534,30 +529,33 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
       return;
     }
 
-    // Track una vez por día
     if (!this.wasTrackedToday()) {
       await this.trackSafe();
       this.markTrackedToday();
     }
 
-    // Cargas iniciales (si SSE tarda)
     await this.loadMeSafe();
     await this.loadTotalSafe();
     await this.loadInsightsSafe(true);
 
-    // SSE
+    // ✅ Si no hay tip (o si es la primera visita), obtener uno del backend ya con VID válido
+    if (!this.currentTip) {
+      await this.pickNewTipFromBackend(this.topic);
+    }
+
     this.sse.start(this.PAGE_KEY);
 
-    // ✅ Timers reducidos (evita saturar backend)
     this.tMe = setInterval(() => void this.loadMeSafe(), 55_000);
     this.tInsights = setInterval(() => void this.loadInsightsSafe(false), 90_000);
     this.tTotal = setInterval(() => void this.loadTotalSafe(), 60_000);
-    this.tFlush = setInterval(() => void this.sync.handshakeAndFlush(this.PAGE_KEY), 70_000);
+    this.tFlush = setInterval(() => void this.safeHandshake(), 70_000);
 
     this.ui();
   }
 
   ngOnDestroy(): void {
+    this.destroyed = true;
+
     this.fx.stop();
     this.sse.stop();
 
@@ -595,15 +593,18 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     this.buildProfileUI(v);
   }
 
+  private async safeHandshake(): Promise<void> {
+    try {
+      await this.sync.handshakeAndFlush(this.PAGE_KEY);
+    } catch {
+      // no-op (offline)
+    }
+  }
+
   private async loadMeSafe() {
     if (this.net.shouldPauseHeavyWork()) return;
 
-    // si backend está en DEGRADED, reduzca agresividad
-    if (this.net.isDegraded()) {
-      // no bloquea, solo evita loops de mucha frecuencia
-    }
-
-    await this.sync.handshakeAndFlush(this.PAGE_KEY);
+    await this.safeHandshake();
 
     const latest = String(this.storage.getVisitorId(this.PAGE_KEY) || '').trim();
     if (this.isSignedVid(latest)) this.syncVisitorId(latest);
@@ -614,7 +615,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
       me,
       this.visitorId,
       { method: 'GET' },
-      { timeoutMs: 6500, dedupe: true, cacheTtlMs: 12_000, allowStaleOnError: true }
+      { timeoutMs: 6500, dedupe: true, cacheTtlMs: 12_000, allowStaleOnError: true },
     );
     if (!res || res.status === 0) return;
     if (res.status === 401 || res.status === 403) return;
@@ -637,7 +638,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
   private async trackSafe() {
     if (this.net.shouldPauseHeavyWork()) return;
 
-    await this.sync.handshakeAndFlush(this.PAGE_KEY);
+    await this.safeHandshake();
 
     const latest = String(this.storage.getVisitorId(this.PAGE_KEY) || '').trim();
     if (this.isSignedVid(latest)) this.syncVisitorId(latest);
@@ -648,7 +649,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
       track,
       this.visitorId,
       { method: 'GET' },
-      { timeoutMs: 6500, dedupe: true, cacheTtlMs: 0, allowStaleOnError: false }
+      { timeoutMs: 6500, dedupe: true, cacheTtlMs: 0, allowStaleOnError: false },
     );
     if (!res || res.status === 0) return;
     if (res.status === 401 || res.status === 403) return;
@@ -671,7 +672,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
   private async loadTotalSafe() {
     if (this.net.shouldPauseHeavyWork()) return;
 
-    await this.sync.handshakeAndFlush(this.PAGE_KEY);
+    await this.safeHandshake();
 
     const latest = String(this.storage.getVisitorId(this.PAGE_KEY) || '').trim();
     if (this.isSignedVid(latest)) this.syncVisitorId(latest);
@@ -682,7 +683,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
       total,
       this.visitorId,
       { method: 'GET' },
-      { timeoutMs: 5200, dedupe: true, cacheTtlMs: 12_000, allowStaleOnError: true }
+      { timeoutMs: 5200, dedupe: true, cacheTtlMs: 12_000, allowStaleOnError: true },
     );
     if (!res || res.status === 0) return;
     if (res.status === 401 || res.status === 403) return;
@@ -704,7 +705,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
 
     if (this.net.shouldPauseHeavyWork()) return;
 
-    await this.sync.handshakeAndFlush(this.PAGE_KEY);
+    await this.safeHandshake();
 
     const latest = String(this.storage.getVisitorId(this.PAGE_KEY) || '').trim();
     if (this.isSignedVid(latest)) this.syncVisitorId(latest);
@@ -715,7 +716,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
       insights,
       this.visitorId,
       { method: 'GET' },
-      { timeoutMs: 6500, dedupe: true, cacheTtlMs: 15_000, allowStaleOnError: true }
+      { timeoutMs: 6500, dedupe: true, cacheTtlMs: 15_000, allowStaleOnError: true },
     );
     if (!res || res.status === 0) return;
     if (res.status === 401 || res.status === 403) return;
@@ -731,10 +732,96 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     this.ui();
   }
 
+  /* ===================== Tips (Backend-first) ===================== */
+
+  private mapSecurityTipToUiTip(st: SecurityTip, fallbackTopic: Topic): TipWithId {
+    const topic = (String(st.topic || '').trim() as Topic) || fallbackTopic;
+
+    const steps = String(st.texto || '')
+      .split(/\r?\n+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    const tag0 = Array.isArray(st.tags) ? st.tags.find(Boolean) : undefined;
+    const title = tag0 ? `${tag0}` : `Tip`;
+
+    const tip: TipWithId = {
+      id: String((st as any).id || (st as any)._id || '').trim(),
+      topic,
+      title,
+      steps,
+
+      // ✅ IMPORTANTE: guarde el nivel para poder mostrar “Dificultad”
+      nivel: Number((st as any).nivel ?? 1) || 1,
+
+      // (opcional) si luego lo quiere mostrar en UI
+      tags: Array.isArray((st as any).tags) ? (st as any).tags : [],
+      activo: (st as any).activo !== false,
+    } as any;
+
+    return tip;
+  }
+
+  private applyTip(tip: TipWithId, source: 'backend' | 'cache') {
+    this.currentTip = tip;
+    this.historyCount = this.storage.getTipHistoryIds().length;
+
+    // cache RAM + persistencia sticky
+    this.lastTipByTopic[this.topic] = tip;
+    this.storage.setLastTipForTopic(this.topic, tip);
+
+    // ✅ “fuente única” para historial/stats/mind/audio
+    this.tipsSrv.registerTipShown(this.topic, tip as any);
+
+    if (source === 'backend' && this.userInteracted) {
+      navigator.vibrate?.(18);
+    }
+  }
+
+  /** Devuelve true si logra obtener y aplicar un tip. */
+  private async pickNewTipFromBackend(topic: Topic): Promise<boolean> {
+    try {
+      if (this.destroyed) return false;
+      if (this.net.shouldPauseHeavyWork()) return false;
+
+      await this.safeHandshake();
+
+      const latest = String(this.storage.getVisitorId(this.PAGE_KEY) || '').trim();
+      if (this.isSignedVid(latest)) this.syncVisitorId(latest);
+      if (!this.isSignedVid(this.visitorId)) return false;
+
+      const res = await this.tipsApi.nextTip(this.PAGE_KEY, this.visitorId, topic);
+      if (!res || res.status === 0) return false;
+      if (res.status === 401 || res.status === 403) return false;
+
+      if (res.visitorId && this.isSignedVid(res.visitorId)) this.syncVisitorId(res.visitorId);
+
+      const st = res.data ?? null;
+      if (!st?.id || !st?.texto) return false;
+
+      const tip = this.mapSecurityTipToUiTip(st, topic);
+      if (!this.getTipId(tip)) return false;
+
+      this.applyTip(tip, 'backend');
+      this.ui();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private difficultyLabel(n: any): string {
+    const nivel = Math.max(1, Number(n ?? 1));
+    if (nivel === 1) return 'Básica';
+    if (nivel === 2) return 'Intermedia';
+    if (nivel === 3) return 'Avanzada';
+    return 'Experta';
+  }
+
   /* ===================== Emisión de eventos (alineado backend) ===================== */
 
   private async emitVisitEvent(type: VisitEventType, meta?: Record<string, any>): Promise<void> {
-    await this.sync.handshakeAndFlush(this.PAGE_KEY);
+    await this.safeHandshake();
 
     const latest = String(this.storage.getVisitorId(this.PAGE_KEY) || '').trim();
     if (this.isSignedVid(latest)) this.syncVisitorId(latest);
@@ -743,10 +830,10 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     await this.sync.trackEvent(this.PAGE_KEY, {
       type,
       topic: this.topic,
-      ref: meta?.['ref'] ?? null, // ✅ ref = tipId (solo tip)
+      ref: meta?.['ref'] ?? null,
       meta: {
         ...(meta ?? {}),
-        urlRef: this.ref, // ✅ antes era meta.ref (colisión)
+        urlRef: this.ref,
       },
     });
 
@@ -770,22 +857,6 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     }, 1600);
   }
 
-  private pickNewTip() {
-    // ✅ Genera el siguiente tip según ranking/historial
-    this.currentTip = this.tipsSrv.nextTip(this.topic) as TipWithId;
-    this.historyCount = this.storage.getTipHistoryIds().length;
-
-    // ✅ Mantener cache RAM alineado
-    if (this.currentTip) {
-      this.lastTipByTopic[this.topic] = this.currentTip;
-
-      // ✅ Persistir a localStorage para que NO cambie al recargar
-      this.storage.setLastTipForTopic(this.topic, this.currentTip);
-    }
-
-    if (this.userInteracted) navigator.vibrate?.(18);
-  }
-
   private getTipId(tip: TipWithId | null): string {
     if (!tip) return '';
     const id = (tip as any).id ?? (tip as any)._id ?? '';
@@ -793,8 +864,10 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
   }
 
   private formatTipForCopy(t: TipWithId): string {
-    const title = t.title ? `• ${t.title}` : '• Tip';
-    const steps = (t.steps || []).map((s, i) => `${i + 1}) ${s}`).join('\n');
+    const title = (t as any).title ? `• ${(t as any).title}` : '• Tip';
+    const steps = ((t as any).steps || [])
+      .map((s: string, i: number) => `${i + 1}) ${s}`)
+      .join('\n');
     return `${title}\n\n${steps}\n\nSystemBlacklem · Tips`;
   }
 
@@ -824,38 +897,45 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     }
   }
 
-  private utcHourToLocalLabel(utcHour: number): string {
-    const d = new Date(Date.UTC(2024, 0, 1, utcHour, 0, 0));
-    const localHour = d.getHours();
-    return String(localHour).padStart(2, '0') + ':00';
-  }
-
   private deriveInsightsUI() {
     const ins = this.insights;
 
-    const nice = (k: string) =>
-      k === 'NEW_TIP'
+    const nice = (key: string) =>
+      key === 'NEW_TIP'
         ? 'Nuevos tips'
-        : k === 'COPY_TIP'
-        ? 'Copias'
-        : k === 'SHARE_TIP'
-        ? 'Compartidos'
-        : k === 'TOPIC'
-        ? 'Cambios tema'
-        : '—';
+        : key === 'TIP_VIEW'
+          ? 'Vistos'
+          : key === 'COPY_TIP'
+            ? 'Copias'
+            : key === 'SHARE_TIP'
+              ? 'Compartidos'
+              : key === 'TOPIC'
+                ? 'Cambios tema'
+                : '—';
 
-    const actions = (ins?.actionCountsLast7 ?? []).slice(0, 5);
-    this.actionRows = actions.map((a: any) => ({
-      label: nice(a.key),
-      value: Number(a.value || 0),
-    }));
+    // =========================
+    // Acciones (por tipo)
+    // actionCountsLast7: [{ key: "COPY_TIP", value: 9 }, ...]
+    // =========================
+    const actions = Array.isArray(ins?.actionCountsLast7) ? ins!.actionCountsLast7.slice(0, 5) : [];
+    this.actionRows = actions.map((a) => {
+      const key = String((a as any)?.key ?? '').trim();
+      const value = Number((a as any)?.value ?? 0) || 0;
+      return { label: nice(key), value };
+    });
 
-    const hours = (ins?.peakHoursLast7 ?? []).slice(0, 5);
-    this.hourRows = hours.map((h: any) => ({
-      key: this.utcHourToLocalLabel(Number(h.key)),
-      value: Number(h.value || 0),
-    }));
+    // =========================
+    // Horas pico
+    // peakHoursLast7: [{ key: "20:00", value: 85 }, ...]
+    // =========================
+    const hours = Array.isArray(ins?.peakHoursLast7) ? ins!.peakHoursLast7.slice(0, 5) : [];
+    this.hourRows = hours.map((h) => {
+      const key = String((h as any)?.key ?? '').trim();
+      const value = Number((h as any)?.value ?? 0) || 0;
+      return { key: key || '—', value };
+    });
 
+    // Labels de resumen
     this.peakHourLabel = this.hourRows[0]?.key ?? '—';
     this.topActionLabel = this.actionRows[0]?.label ?? '—';
     this.healthHint = this.actionRows.length ? 'Buen balance' : 'Inicie con 1 tip';
@@ -910,7 +990,7 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
 
   private applyIdentityVisuals(
     reason: 'PROFILE' | 'PROGRESS' | 'ONLINE' | 'ACTION',
-    actionType?: VisitEventType | 'SSE'
+    actionType?: VisitEventType | 'SSE',
   ) {
     if (reason === 'PROFILE' || reason === 'PROGRESS') {
       this.updateCardVisuals();
@@ -935,7 +1015,6 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
 
     if (this.tBumpReset) clearTimeout(this.tBumpReset);
     this.tBumpReset = setTimeout(() => {
-      // ✅ al finalizar el “bump”, regresar al estado base real
       this.cardState = this.sseAlive ? 'LISTEN' : 'IDLE';
       this.syncHostClass();
       this.ui();
@@ -953,7 +1032,6 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
   private buildProfileUI(visitorId: string) {
     const vid = String(visitorId || '').trim();
 
-    // ✅ Perfil = identidad; no mezcla “modo”, “sse” ni sistema
     this.profileLabel = 'Visitor';
     this.profileBadge = 'Perfil público';
 
@@ -972,7 +1050,6 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
   private makeAlias(id: string): string {
     const raw = String(id || '').trim();
 
-    // ✅ Limpieza robusta: quita prefijos y deja alfanumérico
     const clean = raw
       .replace(/^Visitorv_?/i, '')
       .replace(/^Visitor_?/i, '')
@@ -995,8 +1072,8 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
       mode === 'REST'
         ? Math.min(1, mh.stressScore + 0.15)
         : mode === 'REDUCED'
-        ? Math.min(1, mh.stressScore + 0.08)
-        : mh.stressScore;
+          ? Math.min(1, mh.stressScore + 0.08)
+          : mh.stressScore;
 
     this.audioSrv.setHint({
       sseAlive: this.sseAlive,
@@ -1012,5 +1089,5 @@ export class App implements OnInit, AfterViewInit, OnDestroy {
     `${k.kind ?? 'kpi'}:${k.label}`;
   trackByStep = (i: number, s: string) => `${i}:${s}`;
   trackByAction = (_: number, a: { label: string }) => a.label;
-  trackByHour = (_: number, h: { key: string }) => h.key;
+  trackByHour = (_: number, h: Pair) => h.key;
 }

@@ -10,13 +10,11 @@ export type Tip = {
 };
 
 export type TipContext = {
-  hour: number;          // 0-23
-  day: number;           // 0-6 (Dom=0)
+  hour: number; // 0-23
+  day: number; // 0-6 (Dom=0)
   isWeekend: boolean;
   bucket: 'morning' | 'afternoon' | 'evening' | 'night';
 };
-
-export type Pair = { key: string; value: number };
 
 export type TipStat = {
   seen: number;
@@ -48,12 +46,14 @@ export type VisitProfileResponse = {
   lastRef: string | null;
 };
 
+export type Pair = { key: string; value: number };
+
 export type VisitInsightsResponse = {
   page: string;
   visitorId: string;
   activeDaysLast7: number;
-  peakHoursLast7: Pair[];
-  actionCountsLast7: Pair[];
+  peakHoursLast7: Pair[]; // <-- key="20:00"
+  actionCountsLast7: Pair[]; // <-- key="COPY_TIP"
   engagedSecondsLast7: number;
   sessionsLast7: number;
 };
